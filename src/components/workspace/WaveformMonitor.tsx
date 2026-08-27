@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { AlertCircle, Volume2, Mic } from 'lucide-react'
 import { agoraRtc, RealtimeTelemetry } from '../../services/agoraRtcService'
+import { telemetryCollector, MeasuredTelemetry } from '../../services/telemetryCollector'
 
 export type SpeakerState = 'customer_speaking' | 'relay_speaking' | 'customer_interrupted' | 'listening'
 
@@ -18,8 +19,8 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
     channel: 'relay-case-1042',
     connectionState: 'CONNECTED',
     participantCount: 3,
-    rttMs: 86,
-    packetLossRate: 0.00,
+    rttMs: 84,
+    packetLossRate: 0.01,
     sampleRate: '48 kHz',
     localAudioLevel: 0,
     remoteAudioLevel: 0,
@@ -28,10 +29,11 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
     isHumanTakeover: false,
     isInterrupted: false,
   })
+  const [measured, setMeasured] = useState<MeasuredTelemetry>(telemetryCollector.getSnapshot())
 
   // Subscribe to Agora RTC Telemetry & Real VAD Interruption
   useEffect(() => {
-    const unsub = agoraRtc.subscribeTelemetry((tel) => {
+    const unsubRtc = agoraRtc.subscribeTelemetry((tel) => {
       setTelemetry(tel)
       if (tel.isInterrupted) {
         setSpeakerState('customer_interrupted')
@@ -43,7 +45,15 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
         setSpeakerState('customer_speaking')
       }
     })
-    return unsub
+
+    const unsubMetrics = telemetryCollector.subscribe((data) => {
+      setMeasured(data)
+    })
+
+    return () => {
+      unsubRtc()
+      unsubMetrics()
+    }
   }, [speakerState])
 
   // Call duration timer
@@ -254,7 +264,13 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
             {speakerState === 'customer_interrupted' ? 'RESET INTERRUPTION' : 'SIMULATE BARGE-IN'}
           </button>
 
-          <span className="text-ink-muted tabular-nums">RTT: {telemetry.rttMs}ms</span>
+          <div className="flex items-center gap-1.5 font-mono text-[10px] text-ink-muted">
+            <span className="tabular-nums">RTT: <strong className="text-ink-primary font-semibold">{measured.rttMs}ms</strong></span>
+            <span className="opacity-40">·</span>
+            <span className="tabular-nums">JITTER: <strong className="text-ink-primary font-semibold">{measured.jitterMs}ms</strong></span>
+            <span className="opacity-40">·</span>
+            <span className="tabular-nums">LOSS: <strong className="text-ink-primary font-semibold">{(measured.packetLossRate * 100).toFixed(2)}%</strong></span>
+          </div>
         </div>
       </div>
 
@@ -267,9 +283,11 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
           aria-label="Real-time continuous oscilloscope audio waveform monitor"
         />
 
-        {/* Live Audio Stream Level */}
-        <div className="absolute right-2 top-1 text-[9px] font-mono text-ink-muted/70 pointer-events-none">
-          VOX_RMS: {speakerState === 'customer_interrupted' ? '-4.2 dB' : telemetry.isMuted ? '-∞ dB' : '-14.8 dB'}
+        {/* Live Audio Stream Level & Measured Latencies */}
+        <div className="absolute right-2 top-1 flex items-center gap-2 text-[9px] font-mono text-ink-muted/70 pointer-events-none">
+          <span>TURN: {(measured.agentTurnLatencyMs / 1000).toFixed(2)}s</span>
+          <span>TOOL: {measured.lastToolDurationMs}ms</span>
+          <span>VOX_RMS: {speakerState === 'customer_interrupted' ? '-4.2 dB' : telemetry.isMuted ? '-∞ dB' : '-14.8 dB'}</span>
         </div>
       </div>
 

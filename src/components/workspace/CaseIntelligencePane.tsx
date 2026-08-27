@@ -12,6 +12,7 @@ import {
 import { soundEffects } from '../../utils/soundEffects'
 import { useCaseState } from '../../contexts/CaseStateContext'
 import { agoraRtc } from '../../services/agoraRtcService'
+import { telemetryCollector, MeasuredTelemetry } from '../../services/telemetryCollector'
 
 export type RefundActionState = 'awaiting_approval' | 'approved' | 'declined'
 
@@ -25,6 +26,13 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
   const [isRetrying, setIsRetrying] = useState<boolean>(false)
   const [isTokenRenewed, setIsTokenRenewed] = useState<boolean>(false)
   const [isRenewingToken, setIsRenewingToken] = useState<boolean>(false)
+  const [measured, setMeasured] = useState<MeasuredTelemetry>(telemetryCollector.getSnapshot())
+
+  useEffect(() => {
+    return telemetryCollector.subscribe((data) => {
+      setMeasured(data)
+    })
+  }, [])
 
   const handleTestTokenRenewal = async () => {
     setIsRenewingToken(true)
@@ -116,22 +124,22 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Participants</span>
-              <span className="text-ink-primary font-bold block tabular-nums">3</span>
+              <span className="text-ink-primary font-bold block tabular-nums">{measured.participantCount}</span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Audio</span>
-              <span className="text-ink-primary font-bold block">48 kHz</span>
+              <span className="text-ink-primary font-bold block">{measured.audioSampleRate}</span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">RTT</span>
-              <span className="text-ink-primary font-bold block tabular-nums">86 ms</span>
+              <span className="text-ink-primary font-bold block tabular-nums">{measured.rttMs} ms</span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Packet loss</span>
-              <span className="text-ops-live font-bold block tabular-nums">0.00%</span>
+              <span className="text-ops-live font-bold block tabular-nums">{(measured.packetLossRate * 100).toFixed(2)}%</span>
             </div>
           </div>
 
@@ -277,7 +285,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
               </>
             )}
             <div className="text-[10px] text-ink-muted tabular-nums pt-0.5">
-              {isServiceFailed ? '5002 ms' : '184 ms'}
+              {isServiceFailed ? '5002 ms' : `${measured.lastToolDurationMs} ms`}
             </div>
           </div>
 
@@ -289,7 +297,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
 
             {[
               { name: 'lookupCustomer', status: 'done', latency: '42ms' },
-              { name: 'lookupOrder', status: isServiceFailed ? 'failed' : 'done', latency: isServiceFailed ? '504 timeout' : '62ms' },
+              { name: 'lookupOrder', status: isServiceFailed ? 'failed' : 'done', latency: isServiceFailed ? '504 timeout' : `${measured.lastToolDurationMs}ms` },
               { name: 'getDeliveryStatus', status: isServiceFailed ? 'skipped' : 'done', latency: isServiceFailed ? 'halted' : '80ms' },
               { name: 'refundOrder', status: isServiceFailed ? 'skipped' : 'pending', latency: isServiceFailed ? 'halted' : 'in-flight' },
             ].map((tool, idx) => (

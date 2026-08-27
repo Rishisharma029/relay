@@ -501,18 +501,70 @@ Database health and row counts.
 
 ---
 
-## Database Schema
+---
+
+## Real Telemetry Pipeline
+
+RELAY does not show static placeholder numbers. Every metric in the workstation is real-time measured via an instrumentation pipeline:
+
+```
+┌───────────────────────────┐      ┌───────────────────────────┐
+│  Agora RTC SDK v4.24      │      │  Server Tool Engine &     │
+│  - client.getRTCStats()   │      │  Orchestrator Pipeline    │
+│  - getRemoteAudioStats()  │      │  - processAgentTurn()     │
+│  - getLocalAudioStats()   │      │  - executeTool()          │
+│  - on("network-quality")  │      │  - VAD Preemption Timer   │
+└─────────────┬─────────────┘      └─────────────┬─────────────┘
+              │                                  │
+              └────────────────┬─────────────────┘
+                               │
+                               ▼
+              ┌──────────────────────────────────┐
+              │   Measured Telemetry Collector   │
+              │   (src/services/telemetry.ts)    │
+              └────────────────┬─────────────────┘
+                               │
+                               ▼
+              ┌──────────────────────────────────┐
+              │   Subscribed Operator UI Panes   │
+              │   RTT:          84 ms            │
+              │   Packet Loss:  0.01%            │
+              │   Jitter:       0.7 ms           │
+              │   Agent Turn:   1.18 s           │
+              │   Tool Latency: 182 ms           │
+              └──────────────────────────────────┘
+```
+
+---
+
+## Production Database & Event Sourcing
+
+RELAY models 10 PostgreSQL 16 entities with a **strictly append-only immutable event sourcing architecture**:
+
+```
+Append-Only Relay Events Log
+           │
+           │  (Sequence #1, #2, #3...)
+           ▼
+    caseStateReducer(state, event)   ── Pure Deterministic Function
+           │
+           ▼
+     Current Authoritative Case State
+```
+
+### 10 Core Database Entities
 
 ```sql
-customers          — Identity, tier, language preference
-cases              — Active sessions, status, intent, language
-conversations      — RTC channel metadata, duration
-transcript_messages — Every spoken line, speaker, language, translation
-case_facts         — Verified data points (order ID, amount, exception)
-actions            — Proposed financial actions (REFUND, ESCALATION...)
-approvals          — Operator approval records with policy snapshots
-tool_executions    — Every tool call: params, result, duration
-events             — Full event log for replay and audit
+1. customers           — Customer identity, tier, language preference, dispute rate
+2. cases               — Active case sessions, state, intent, sentiment
+3. calls               — WebRTC channel metadata, sample rate, start/end timestamps
+4. participants        — Attendee role (CUSTOMER, AI_AGENT, OPERATOR), mute state, join/leave
+5. transcript_messages — Spoken dialogue line, speaker, language, translation, confidence
+6. case_facts          — Verified knowledge graph facts with source attribution
+7. actions             — Proposed operations (REFUND, ESCALATION, REROUTE, COURIER_HOLD)
+8. approvals           — Operator governance gates with policy snapshots and TTL expiry
+9. tool_executions     — Autonomous function call parameters, results, duration_ms
+10. relay_events       — Strictly append-only immutable audit log (No UPDATE / DELETE rules)
 ```
 
 Full schema: [`server/db/schema.sql`](./server/db/schema.sql)

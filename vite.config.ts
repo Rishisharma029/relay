@@ -271,6 +271,47 @@ function agoraApiPlugin(): Plugin {
         res.statusCode = 200
         res.end(JSON.stringify({ keys: listIdempotencyKeys() }))
       })
+
+      // 9. APPEND-ONLY RELAY EVENTS LOG: /api/events
+      server.middlewares.use('/api/events', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 200
+          res.end()
+          return
+        }
+
+        const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`)
+        const caseId = url.searchParams.get('caseId') || 'RLY-1042'
+
+        if (req.method === 'GET') {
+          const events = db.getRelayEvents(caseId)
+          res.statusCode = 200
+          res.end(JSON.stringify({ caseId, count: events.length, events }))
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => (body += chunk))
+          req.on('end', () => {
+            try {
+              const data = body ? JSON.parse(body) : {}
+              const eventRecord = db.appendRelayEvent(data.caseId || caseId, data.event || data)
+              res.statusCode = 201
+              res.end(JSON.stringify({ success: true, event: eventRecord }))
+            } catch (err: any) {
+              res.statusCode = 400
+              res.end(JSON.stringify({ error: err.message }))
+            }
+          })
+          return
+        }
+      })
     }
   }
 }

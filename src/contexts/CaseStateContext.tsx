@@ -1,16 +1,21 @@
 /**
  * RELAY — Authoritative Case State Context
- * Single source of truth across all workspaces, views, and panes.
+ * Single source of truth driven by event-sourcing and deterministic reducers.
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { CaseState, INITIAL_CASE_STATE, Fact } from '../types/caseState'
+import { RelayEvent } from '../types/relayEvents'
 import { agoraRtm } from '../services/agoraRtmService'
 import { agoraRtc, RealtimeTelemetry } from '../services/agoraRtcService'
+import { caseStateReducer, reconstructCaseState } from '../services/caseStateReducer'
 
 interface CaseStateContextType {
   caseState: CaseState
   setCaseState: React.Dispatch<React.SetStateAction<CaseState>>
+  events: RelayEvent[]
+  dispatchRelayEvent: (event: RelayEvent) => void
+  replayUpToIndex: (index: number) => void
   updateLanguage: (language: string) => void
   updateIntent: (intent: string) => void
   updateSentiment: (sentiment: string) => void
@@ -27,183 +32,69 @@ const CaseStateContext = createContext<CaseStateContextType | null>(null)
 
 export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [caseState, setCaseState] = useState<CaseState>(INITIAL_CASE_STATE)
+  const [events, setEvents] = useState<RelayEvent[]>([
+    {
+      type: 'call.started',
+      caseId: 'RLY-1042',
+      timestamp: '21:33:40',
+    },
+    {
+      type: 'speech.transcript',
+      speaker: 'customer',
+      text: 'Mera order 5 din se nahi aaya.',
+      language: 'Hindi',
+      translation: "My order hasn't arrived for 5 days.",
+      timestamp: '21:33:42',
+    },
+    {
+      type: 'tool.started',
+      tool: 'lookupOrder',
+      params: { orderId: '84921' },
+      timestamp: '21:33:44',
+    },
+    {
+      type: 'tool.completed',
+      tool: 'lookupOrder',
+      durationMs: 184,
+      result: { orderId: '84921', status: 'DELIVERY_EXCEPTION', daysDelayed: 3 },
+      timestamp: '21:33:45',
+    },
+  ])
+
+  // Pure Dispatcher: appends event and runs through deterministic caseStateReducer
+  const dispatchRelayEvent = useCallback((ev: RelayEvent) => {
+    setEvents((prevEvents) => [...prevEvents, ev])
+    setCaseState((prevState) => caseStateReducer(prevState, ev))
+  }, [])
+
+  // Time-travel replay: reconstructs state up to any historical event index
+  const replayUpToIndex = useCallback((index: number) => {
+    setCaseState(reconstructCaseState(events, index, INITIAL_CASE_STATE))
+  }, [events])
 
   // Synchronize with Agora RTM and RTC events via unified RelayEvent bus
   useEffect(() => {
     const unsubRelay = agoraRtm.subscribeRelayEvents((ev) => {
-      switch (ev.type) {
-        case 'call.started':
-          setCaseState((prev) => ({ ...prev, id: ev.caseId, status: 'active' }))
-          break
-        case 'speech.transcript':
-          if (ev.language && ev.language !== caseState.language) {
-            setCaseState((prev) => ({ ...prev, language: ev.language }))
-          }
-          break
-        case 'language.changed':
-          setCaseState((prev) => ({ ...prev, language: ev.to }))
-          break
-        case 'approval.created':
-          setCaseState((prev) => ({ ...prev, status: 'awaiting_approval' }))
-          break
-        case 'approval.approved':
-          setCaseState((prev) => ({
-            ...prev,
-            status: 'resolved',
-            activeAction: prev.activeAction
-              ? { ...prev.activeAction, status: 'APPROVED', approvedAt: ev.timestamp, approvedBy: ev.operatorId }
-              : undefined,
-          }))
-          break
-        case 'human.takeover':
-          setCaseState((prev) => {
-            const nextState = ev.state || (prev.takeoverState === 'AI_ACTIVE' ? 'HUMAN_ACTIVE' : 'AI_ACTIVE')
-            return {
-              ...prev,
-              takeoverState: nextState,
-              status: nextState === 'HUMAN_ACTIVE' || nextState === 'TAKEOVER_REQUESTED' ? 'human_takeover' : 'active',
-            }
-          })
-          break
-        // ── Failure Events ────────────────────────────────────────────────
-        case 'failure.tool_timeout':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:       ev.state as any,
-              message:     `Tool ${ev.tool} timed out (attempt ${ev.attempt}/${ev.maxAttempts})`,
-              attempt:     ev.attempt,
-              maxAttempts: ev.maxAttempts,
-              escalate:    ev.attempt >= ev.maxAttempts,
-              timestamp:   ev.timestamp,
-              recovery:    ev.recovery,
-            },
-          }))
-          break
-        case 'failure.llm_timeout':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'AI processing timeout. Retrying...',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.agora_disconnect':
-          setCaseState((prev) => ({
-            ...prev,
-            status:       'connecting',
-            activeFailure: {
-              state:     ev.state as any,
-              message:   `Audio disconnected. Reconnect attempt ${ev.reconnectAttempt}...`,
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.asr_failure':
-        case 'failure.tts_failure':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   ev.reason,
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.db_unavailable':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Database unavailable. Read-only mode active.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.approval_expired':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Approval window expired. A new request has been created.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.approval_duplicate':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Duplicate prevented. This refund was already processed.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.token_expired':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Token refreshing. Call will not be interrupted.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.customer_disconnect':
-          setCaseState((prev) => ({
-            ...prev,
-            status:       'resolved',
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Customer disconnected. Case preserved.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.human_disconnect':
-          setCaseState((prev) => ({
-            ...prev,
-            takeoverState: 'AI_ACTIVE',
-            status:        'active',
-            activeFailure: {
-              state:     ev.state as any,
-              message:   'Operator disconnected. AI agent resumed.',
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-        case 'failure.escalation_required':
-          setCaseState((prev) => ({
-            ...prev,
-            activeFailure: {
-              state:     (ev.state || ev.failureState) as any,
-              message:   `Escalating: ${ev.reason}`,
-              escalate:  true,
-              timestamp: ev.timestamp,
-              recovery:  ev.recovery,
-            },
-          }))
-          break
-      }
+      dispatchRelayEvent(ev)
     })
 
     const unsubRtc = agoraRtc.subscribeTelemetry((tel: RealtimeTelemetry) => {
       if (tel.isHumanTakeover && caseState.takeoverState !== 'HUMAN_ACTIVE') {
-        setCaseState((prev) => ({ ...prev, takeoverState: 'HUMAN_ACTIVE', status: 'human_takeover' }))
+        dispatchRelayEvent({
+          type: 'human.takeover',
+          operatorId: 'OP-782',
+          state: 'HUMAN_ACTIVE',
+          reason: 'Agora RTC Telemetry Hardware Sync',
+          timestamp: new Date().toLocaleTimeString(),
+        })
       } else if (!tel.isHumanTakeover && caseState.takeoverState === 'HUMAN_ACTIVE') {
-        setCaseState((prev) => ({ ...prev, takeoverState: 'AI_ACTIVE', status: 'active' }))
+        dispatchRelayEvent({
+          type: 'human.takeover',
+          operatorId: 'OP-782',
+          state: 'AI_ACTIVE',
+          reason: 'Agora RTC Telemetry Hardware Return',
+          timestamp: new Date().toLocaleTimeString(),
+        })
       } else if (tel.connectionState === 'CONNECTING' && caseState.status !== 'connecting') {
         setCaseState((prev) => ({ ...prev, status: 'connecting' }))
       } else if (tel.connectionState === 'ERROR' && caseState.status !== 'failed') {
@@ -215,10 +106,15 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubRelay()
       unsubRtc()
     }
-  }, [caseState.language, caseState.status])
+  }, [caseState.takeoverState, caseState.status, dispatchRelayEvent])
 
   const updateLanguage = (language: string) => {
-    setCaseState((prev) => ({ ...prev, language }))
+    dispatchRelayEvent({
+      type: 'language.changed',
+      from: caseState.language,
+      to: language,
+      timestamp: new Date().toLocaleTimeString(),
+    })
   }
 
   const updateIntent = (intent: string) => {
@@ -250,33 +146,33 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const approveActiveAction = async (operatorName: string = 'Maya Sharma') => {
     try {
       const now = new Date().toLocaleTimeString()
-      await fetch('/api/approvals/approve', {
+      const res = await fetch('/api/approvals/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           approvalId: caseState.activeAction?.id || 'appr-1042-99042',
           operator: { id: 'OP-782', name: operatorName },
+          caseId: caseState.id,
         }),
       })
 
-      setCaseState((prev) => ({
-        ...prev,
-        status: 'resolved',
-        activeAction: prev.activeAction
-          ? {
-              ...prev.activeAction,
-              status: 'APPROVED',
-              approvedAt: now,
-              approvedBy: operatorName,
-            }
-          : undefined,
-      }))
+      if (res.ok) {
+        dispatchRelayEvent({
+          type: 'approval.approved',
+          actionId: caseState.activeAction?.id || 'appr-1042-99042',
+          operatorId: 'OP-782',
+          amount: caseState.activeAction?.amount || 1499,
+          timestamp: now,
+        })
+      }
     } catch (e) {
-      setCaseState((prev) => ({
-        ...prev,
-        status: 'resolved',
-        activeAction: prev.activeAction ? { ...prev.activeAction, status: 'APPROVED' } : undefined,
-      }))
+      dispatchRelayEvent({
+        type: 'approval.approved',
+        actionId: caseState.activeAction?.id || 'appr-1042-99042',
+        operatorId: 'OP-782',
+        amount: 1499,
+        timestamp: new Date().toLocaleTimeString(),
+      })
     }
   }
 
@@ -288,6 +184,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         body: JSON.stringify({
           approvalId: caseState.activeAction?.id || 'appr-1042-99042',
           operator: { id: 'OP-782', name: 'Maya Sharma' },
+          caseId: caseState.id,
         }),
       })
     } catch (e) {}
@@ -304,6 +201,13 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       ...INITIAL_CASE_STATE,
       id: caseId,
     })
+    setEvents([
+      {
+        type: 'call.started',
+        caseId,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ])
   }
 
   const clearFailure = () => {
@@ -315,6 +219,9 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       value={{
         caseState,
         setCaseState,
+        events,
+        dispatchRelayEvent,
+        replayUpToIndex,
         updateLanguage,
         updateIntent,
         updateSentiment,

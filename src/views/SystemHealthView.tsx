@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import {
@@ -13,6 +13,7 @@ import {
   Server,
   Network
 } from 'lucide-react'
+import { telemetryCollector, MeasuredTelemetry } from '../services/telemetryCollector'
 
 export interface ServiceHealthItem {
   id: string
@@ -26,6 +27,13 @@ export interface ServiceHealthItem {
 export const SystemHealthView: React.FC = () => {
   const [isRunningPing, setIsRunningPing] = useState<boolean>(false)
   const [lastChecked, setLastChecked] = useState<string>('Just now')
+  const [measured, setMeasured] = useState<MeasuredTelemetry>(telemetryCollector.getSnapshot())
+
+  useEffect(() => {
+    return telemetryCollector.subscribe((data) => {
+      setMeasured(data)
+    })
+  }, [])
 
   const services: ServiceHealthItem[] = [
     {
@@ -142,12 +150,12 @@ export const SystemHealthView: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1.5 pt-1">
               <span className="text-2xl font-bold text-ink-primary tracking-tight tabular-nums">
-                86
+                {measured.rttMs}
               </span>
               <span className="text-xs font-semibold text-ink-muted">ms</span>
             </div>
             <p className="text-[10px] font-sans text-ink-secondary leading-tight pt-1 border-t border-border-subtle/70">
-              Agora WebRTC audio stream roundtrip to Mumbai edge
+              Agora WebRTC audio stream roundtrip to edge
             </p>
           </div>
 
@@ -161,7 +169,7 @@ export const SystemHealthView: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1.5 pt-1">
               <span className="text-2xl font-bold text-ink-primary tracking-tight tabular-nums">
-                184
+                {measured.lastToolDurationMs}
               </span>
               <span className="text-xs font-semibold text-ink-muted">ms</span>
             </div>
@@ -180,7 +188,7 @@ export const SystemHealthView: React.FC = () => {
             </div>
             <div className="flex items-baseline gap-1.5 pt-1">
               <span className="text-2xl font-bold text-ink-primary tracking-tight tabular-nums">
-                1.2
+                {(measured.agentTurnLatencyMs / 1000).toFixed(2)}
               </span>
               <span className="text-xs font-semibold text-ink-muted">s</span>
             </div>

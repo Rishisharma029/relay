@@ -19,6 +19,7 @@ import {
   FAILURE_STATES,
   buildFailureEvent,
 } from './failureEngine.js'
+import { db } from './db/database.js'
 
 export const approvalStore = new Map()
 
@@ -220,6 +221,20 @@ export async function processApproval(
   record.transaction = refundResult
   record.finalPolicyCheck = policyRecheck
   approvalStore.set(approvalId, record)
+
+  try {
+    db.appendRelayEvent(record.caseId, {
+      type: 'approval.approved',
+      payload: {
+        approvalId: record.id,
+        operatorId: operator.id,
+        amount: record.amount,
+        policyId: record.policyId,
+        idempotencyKey: idemKey,
+      },
+      timestamp: new Date().toLocaleTimeString(),
+    })
+  } catch (e) {}
 
   return completedResult
 }

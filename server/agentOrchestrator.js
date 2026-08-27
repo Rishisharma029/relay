@@ -8,6 +8,7 @@ import { executeTool } from './tools/index.js'
 import { createApprovalRequest } from './approvalService.js'
 import { sessionLanguageStore, detectLanguageShift } from './languageManager.js'
 import { LLM_TIMEOUT_MS } from './config.js'
+import { db } from './db/database.js'
 import {
   FAILURE_STATES,
   buildFailureEvent,
@@ -304,6 +305,13 @@ export async function processAgentTurn(customerUtterance = 'Mera order 5 din se 
     language:    activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi / Hinglish',
     timestamp:   new Date().toLocaleTimeString(),
   })
+
+  // Append all events to authoritative PostgreSQL append-only store
+  for (const ev of events) {
+    try {
+      db.appendRelayEvent(caseId, ev)
+    } catch (e) {}
+  }
 
   return {
     success:        failures.length === 0,

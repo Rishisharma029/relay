@@ -1,6 +1,7 @@
 -- =============================================================================
--- RELAY — Production Database Schema (PostgreSQL)
--- Version: 1.0.0
+-- RELAY — Production Database Schema (PostgreSQL 16 Engine)
+-- Version: 2.0.0
+-- 10 Core Entities with Strictly Append-Only Event Sourcing
 -- =============================================================================
 
 -- 1. CUSTOMERS
@@ -28,8 +29,8 @@ CREATE TABLE IF NOT EXISTS cases (
     resolved_at TIMESTAMP WITH TIME ZONE
 );
 
--- 3. CONVERSATIONS
-CREATE TABLE IF NOT EXISTS conversations (
+-- 3. CALLS (WebRTC Sessions)
+CREATE TABLE IF NOT EXISTS calls (
     id VARCHAR(64) PRIMARY KEY,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
     rtc_channel VARCHAR(128) NOT NULL,
@@ -39,10 +40,22 @@ CREATE TABLE IF NOT EXISTS conversations (
     duration_seconds INTEGER DEFAULT 0
 );
 
--- 4. TRANSCRIPT_MESSAGES
+-- 4. PARTICIPANTS (Call Attendee Tracking)
+CREATE TABLE IF NOT EXISTS participants (
+    id VARCHAR(64) PRIMARY KEY,
+    call_id VARCHAR(64) REFERENCES calls(id) ON DELETE CASCADE,
+    uid VARCHAR(64) NOT NULL,
+    role VARCHAR(32) NOT NULL CHECK (role IN ('CUSTOMER', 'AI_AGENT', 'OPERATOR')),
+    name VARCHAR(255) NOT NULL,
+    is_muted BOOLEAN DEFAULT FALSE,
+    joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    left_at TIMESTAMP WITH TIME ZONE
+);
+
+-- 5. TRANSCRIPT_MESSAGES
 CREATE TABLE IF NOT EXISTS transcript_messages (
     id VARCHAR(64) PRIMARY KEY,
-    conversation_id VARCHAR(64) REFERENCES conversations(id) ON DELETE CASCADE,
+    call_id VARCHAR(64) REFERENCES calls(id) ON DELETE CASCADE,
     speaker VARCHAR(32) NOT NULL CHECK (speaker IN ('CUSTOMER', 'RELAY', 'OPERATOR')),
     text TEXT NOT NULL,
     translation TEXT,
@@ -53,7 +66,7 @@ CREATE TABLE IF NOT EXISTS transcript_messages (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. CASE_FACTS
+-- 6. CASE_FACTS (Verified Knowledge Graph)
 CREATE TABLE IF NOT EXISTS case_facts (
     id VARCHAR(64) PRIMARY KEY,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
@@ -63,7 +76,7 @@ CREATE TABLE IF NOT EXISTS case_facts (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 6. ACTIONS
+-- 7. ACTIONS (Proposed Financial & System Operations)
 CREATE TABLE IF NOT EXISTS actions (
     id VARCHAR(64) PRIMARY KEY,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
@@ -75,14 +88,14 @@ CREATE TABLE IF NOT EXISTS actions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 7. APPROVALS
+-- 8. APPROVALS (Human Operator Governance Gates)
 CREATE TABLE IF NOT EXISTS approvals (
     id VARCHAR(64) PRIMARY KEY,
     action_id VARCHAR(64) REFERENCES actions(id) ON DELETE CASCADE,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
     risk_tier VARCHAR(32) DEFAULT 'MEDIUM' CHECK (risk_tier IN ('LOW', 'MEDIUM', 'HIGH')),
     policy_id VARCHAR(128) NOT NULL,
-    status VARCHAR(32) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'DECLINED')),
+    status VARCHAR(32) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'DECLINED', 'EXPIRED')),
     operator_id VARCHAR(64),
     operator_name VARCHAR(255),
     decline_reason TEXT,
@@ -90,7 +103,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 8. TOOL_EXECUTIONS
+-- 9. TOOL_EXECUTIONS (Autonomous Function Call Records)
 CREATE TABLE IF NOT EXISTS tool_executions (
     id VARCHAR(64) PRIMARY KEY,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
@@ -102,20 +115,28 @@ CREATE TABLE IF NOT EXISTS tool_executions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 9. EVENTS
-CREATE TABLE IF NOT EXISTS events (
+-- 10. RELAY_EVENTS (STRICTLY APPEND-ONLY EVENT SOURCING LOG)
+CREATE TABLE IF NOT EXISTS relay_events (
     id VARCHAR(64) PRIMARY KEY,
     case_id VARCHAR(64) REFERENCES cases(id) ON DELETE CASCADE,
+    sequence_num BIGINT NOT NULL,
     event_type VARCHAR(64) NOT NULL,
     payload JSONB NOT NULL,
     timestamp VARCHAR(32) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_case_sequence UNIQUE (case_id, sequence_num)
 );
 
--- INDEXES FOR AUDIT SEARCH AND REALTIME QUERYING
+-- IMMUTABILITY RULE: Prevent updates or deletes on relay_events (Append-Only Guarantee)
+CREATE OR REPLACE RULE no_update_relay_events AS ON UPDATE TO relay_events DO INSTEAD NOTHING;
+CREATE OR REPLACE RULE no_delete_relay_events AS ON DELETE TO relay_events DO INSTEAD NOTHING;
+
+-- INDEXES FOR INSTANT AUDIT SEARCH, REPLAY & REALTIME QUERYING
 CREATE INDEX IF NOT EXISTS idx_cases_customer_id ON cases(customer_id);
-CREATE INDEX IF NOT EXISTS idx_transcript_conversation_id ON transcript_messages(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_calls_case_id ON calls(case_id);
+CREATE INDEX IF NOT EXISTS idx_participants_call_id ON participants(call_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_call_id ON transcript_messages(call_id);
 CREATE INDEX IF NOT EXISTS idx_case_facts_case_id ON case_facts(case_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_case_id ON approvals(case_id);
 CREATE INDEX IF NOT EXISTS idx_tool_executions_case_id ON tool_executions(case_id);
-CREATE INDEX IF NOT EXISTS idx_events_case_id ON events(case_id);
+CREATE INDEX IF NOT EXISTS idx_relay_events_case_seq ON relay_events(case_id, sequence_num ASC);
