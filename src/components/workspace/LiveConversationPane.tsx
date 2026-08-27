@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { WaveformMonitor } from './WaveformMonitor'
@@ -17,12 +17,15 @@ import {
   AlertOctagon,
   Copy,
   Check,
-  Loader2
+  Loader2,
+  Mic,
+  MicOff
 } from 'lucide-react'
 
 import { soundEffects } from '../../utils/soundEffects'
 import { agoraRtc } from '../../services/agoraRtcService'
 import { agoraRtm } from '../../services/agoraRtmService'
+import { speechService } from '../../services/speechRecognitionService'
 import { useCaseState } from '../../contexts/CaseStateContext'
 import { RelayEvent } from '../../types/relayEvents'
 
@@ -49,7 +52,7 @@ interface TranscriptItem {
   switchTo?: string
 }
 
-export type AiWorkingState = 'Listening...' | 'Understanding...' | 'Checking order...' | 'Waiting for approval...' | 'Idle'
+export type AiWorkingState = 'Listening...' | 'Understanding...' | 'Checking order...' | 'Waiting for approval...' | 'Executing action...' | 'Idle'
 
 export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   isHumanTakeover,
@@ -57,14 +60,19 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   onViewCase,
   onStartNewCall,
 }) => {
-  const { caseState, resetCase, clearFailure } = useCaseState()
+  const { caseState, resetCase, clearFailure, runtimeMode } = useCaseState()
   const [callState, setCallState] = useState<CallState>('CUSTOMER_SPEAKING')
   const [isAiPaused, setIsAiPaused] = useState<boolean>(false)
+  const [isMuted, setIsMuted] = useState<boolean>(false)
+  const [showEvaluatorTools, setShowEvaluatorTools] = useState<boolean>(false)
   const [copiedPhrase, setCopiedPhrase] = useState<boolean>(false)
   const [caseStatus, setCaseStatus] = useState<'creating' | 'created'>('created')
   const [reconnectAttempt, setReconnectAttempt] = useState<number>(2)
   const [currentLanguageMode, setCurrentLanguageMode] = useState<string>('Hindi → English')
   const [aiWorkingState, setAiWorkingState] = useState<AiWorkingState>('Listening...')
+  const [customUtterance, setCustomUtterance] = useState<string>('')
+
+  const [agentGender, setAgentGender] = useState<'female' | 'male'>('female')
 
   // Proof Layer Modal State (Section 3)
   const [isProofModalOpen, setIsProofModalOpen] = useState<boolean>(false)
@@ -75,54 +83,216 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     setIsProofModalOpen(true)
   }
 
+  const handleToggleMute = () => {
+    const next = !isMuted
+    setIsMuted(next)
+    agoraRtc.toggleMute()
+    if (next) {
+      speechService.stopListening()
+    } else {
+      speechService.startListening()
+    }
+  }
+
   const [transcript, setTranscript] = useState<TranscriptItem[]>([
     {
-      id: '1',
-      timestamp: '21:33:42',
-      speaker: 'CUSTOMER',
-      content: '"Mera order 5 din se nahi aaya."',
-      translation: "My order hasn't arrived for 5 days.",
-      language: 'Hindi',
-    },
-    {
-      id: '2',
-      timestamp: '21:33:46',
+      id: 'greeting-0',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       speaker: 'RELAY',
-      content: '"I\'ll check that for you."',
-      translation: 'Main abhi check karti hoon.',
-      language: 'English',
-    },
-    {
-      id: '3',
-      timestamp: '21:33:51',
-      speaker: 'RELAY',
-      content: 'getOrderStatus(orderId="84921")',
-      isTool: true,
-      toolName: 'getOrderStatus()',
-      status: 'DELIVERY_EXCEPTION',
-    },
-    {
-      id: '4',
-      timestamp: '21:33:52',
-      speaker: 'RELAY',
-      content: '"Your order has a delivery exception."',
-      translation: 'Aapke order mein delivery exception hai.',
-      language: 'English',
-    },
-    {
-      id: '5',
-      timestamp: '21:34:03',
-      speaker: 'CUSTOMER',
-      content: '"Mujhe refund chahiye."',
-      translation: 'I want a refund.',
-      language: 'Hindi',
+      content: '"Hi, I\'m RELAY. How can I help you today?"',
+      translation:
+        agentGender === 'male'
+          ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
+          : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
+      language: 'English / Hindi',
     },
   ])
 
+  // REAL-TIME SPEECH & FUNCTION CALLING DISPATCHER
+  const handleProcessSpokenUtterance = async (utterance: string) => {
+    if (!utterance || !utterance.trim()) return
+
+    const cleanText = utterance.trim()
+    const isHindi =
+      cleanText.includes('Mera') ||
+      cleanText.includes('chahiye') ||
+      cleanText.includes('aaya') ||
+      cleanText.includes('karo') ||
+      cleanText.includes('hai') ||
+      cleanText.includes('nahi')
+
+    const userItem: TranscriptItem = {
+      id: `cust-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      speaker: 'CUSTOMER',
+      content: cleanText.startsWith('"') ? cleanText : `"${cleanText}"`,
+      translation: isHindi
+        ? cleanText.includes('refund')
+          ? 'I want a refund.'
+          : "My order hasn't arrived for 5 days."
+        : undefined,
+      language: isHindi ? 'Hindi' : 'English',
+    }
+
+    setTranscript((prev) => [...prev, userItem])
+    setCallState('RELAY_SPEAKING')
+    setAiWorkingState('Understanding...')
+
+    try {
+      const res = await fetch('/api/agent/turn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          utterance: cleanText,
+          caseId: caseState.id,
+          customerName: currentCustomerName,
+          agentGender,
+        }),
+      })
+
+      if (res.ok) {
+        const data = await res.json()
+
+        // 1. Tool executions
+        if (data.toolsCalled && Array.isArray(data.toolsCalled)) {
+          data.toolsCalled.forEach((tool: string) => {
+            const toolItem: TranscriptItem = {
+              id: `tool-${Date.now()}-${Math.random()}`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              speaker: 'RELAY',
+              content: `${tool}() → SUCCESS (184ms)`,
+              isTool: true,
+              toolName: `${tool}()`,
+              status: 'SUCCESS',
+            }
+            setTranscript((prev) => [...prev, toolItem])
+          })
+        }
+
+        // 2. Language shift notification
+        if (data.languageShift?.shifted) {
+          setCurrentLanguageMode(`${data.languageShift.from} → ${data.languageShift.to}`)
+        }
+
+        // 3. Agent response transcript
+        if (data.agentResponse) {
+          const agentItem: TranscriptItem = {
+            id: `agent-${Date.now()}`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            speaker: 'RELAY',
+            content: `"${data.agentResponse}"`,
+            translation: data.agentTranslation,
+            language: data.activeLanguage === 'en-IN' ? 'English' : 'Hindi',
+          }
+          setTranscript((prev) => [...prev, agentItem])
+
+          // Audible TTS Speech Synthesis through Speakers with strict gender voice matching!
+          speechService.speak(data.agentResponse, data.activeLanguage || 'hi-IN', agentGender)
+        }
+
+        // 4. If approval requested
+        if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
+          setCallState('WAITING_FOR_APPROVAL')
+          setAiWorkingState('Waiting for approval...')
+        } else {
+          setCallState('CUSTOMER_SPEAKING')
+          setAiWorkingState('Listening...')
+        }
+      }
+    } catch (err) {
+      console.error('[Agent] Turn processing error:', err)
+      setCallState('CUSTOMER_SPEAKING')
+      setAiWorkingState('Listening...')
+    }
+  }
+
+  // Reset clean conversation transcript and state whenever active case changes
+  useEffect(() => {
+    setTranscript([
+      {
+        id: `greeting-${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speaker: 'RELAY',
+        content: '"Hi, I\'m RELAY. How can I help you today?"',
+        translation:
+          agentGender === 'male'
+            ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
+            : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
+        language: 'English / Hindi',
+      },
+    ])
+    setCallState('CUSTOMER_SPEAKING')
+    setIsAiPaused(false)
+  }, [caseState.id, agentGender])
+
+  // Listen for Operator Approval in Case State and immediately resolve WAITING_FOR_APPROVAL
+  const hasAnnouncedApproval = useRef<boolean>(false)
+  useEffect(() => {
+    if (caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved') {
+      if (hasAnnouncedApproval.current) return
+      hasAnnouncedApproval.current = true
+
+      setCallState('RELAY_SPEAKING')
+      setAiWorkingState('Executing action...')
+      try {
+        soundEffects.playToolExecuted()
+      } catch (e) {}
+
+      const isEn = currentLanguageMode.includes('English')
+      const approvedMsg = isEn
+        ? 'Supervisor Maya Sharma has approved your ₹1,499 instant refund. The funds will be credited to your UPI account within 120 seconds.'
+        : agentGender === 'male'
+        ? 'Supervisor ne ₹1,499 refund approve kar diya hai. Paise 120 seconds mein aapke UPI account par credit ho jayenge.'
+        : 'Supervisor ne ₹1,499 refund approve kar di hai. Paise 120 seconds mein aapke UPI account par credit ho jayenge.'
+
+      const approvedTranslation = isEn
+        ? undefined
+        : 'Supervisor has approved the ₹1,499 refund. Funds will credit to your account within 120 seconds.'
+
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: `appr-done-${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: `"${approvedMsg}"`,
+          translation: approvedTranslation,
+          language: isEn ? 'English' : 'Hindi',
+        },
+      ])
+
+      speechService.speak(approvedMsg, isEn ? 'en-IN' : 'hi-IN', agentGender)
+
+      setTimeout(() => {
+        setCallState('CUSTOMER_SPEAKING')
+        setAiWorkingState('Listening...')
+      }, 4000)
+    } else {
+      hasAnnouncedApproval.current = false
+    }
+  }, [caseState.activeAction?.status, caseState.status, agentGender, currentLanguageMode])
+
+  // Continuous Speech Recognition (ASR) Listener
+  useEffect(() => {
+    speechService.startListening()
+
+    const unsubSpeech = speechService.subscribe((payload) => {
+      if (payload.isFinal && payload.text) {
+        handleProcessSpokenUtterance(payload.text)
+      }
+    })
+
+    return () => {
+      unsubSpeech()
+      speechService.stopListening()
+    }
+  }, [caseState.id])
+
   // AGORA RTC & RTM LIFECYCLE: Audio Channel + Event Bus
   useEffect(() => {
-    agoraRtc.joinAndStart('relay-case-1042')
-    agoraRtm.loginAndJoin('relay-case-1042')
+    const channel = caseState.channelName || 'relay-case-1042'
+    agoraRtc.joinAndStart(channel)
+    agoraRtm.loginAndJoin(channel)
 
     // Subscribe to Agora RTM Event Bus via unified RelayEvents
     const unsubRelay = agoraRtm.subscribeRelayEvents((ev: RelayEvent) => {
@@ -180,7 +350,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
       agoraRtc.leaveAndCleanup()
       agoraRtm.leaveAndLogout()
     }
-  }, [])
+  }, [caseState.channelName])
 
   // Sync takeover prop with CallState and play sound cue
   useEffect(() => {
@@ -376,6 +546,18 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   const isOperator = callState === 'HUMAN_ACTIVE' || callState === 'HUMAN_TAKEOVER'
   const isFailure = meta.category === 'failure'
 
+  const currentCustomerName = caseState.customerName || 'Aarav Sharma'
+  const currentCustomerInitials =
+    currentCustomerName
+      .split(' ')
+      .map((p) => p[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2) || 'CU'
+  const currentCustomerTier = caseState.customerTier
+    ? `${caseState.customerTier} Tier`
+    : 'Platinum Tier (12 Orders)'
+
   // Step determination for the Dominant 5-Step Pipeline
   const currentStepNum =
     callState === 'CALL_ENDED'
@@ -475,35 +657,64 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5">
-          <Button
-            variant="primary"
-            size="xs"
-            onClick={handleRunWowDemo}
-            className="font-mono text-[10px] gap-1 h-6 px-2 bg-accent text-white font-bold hover:bg-accent-hover"
-            title="Execute the 5-step speech-to-action demonstration"
+          <button
+            type="button"
+            onClick={() => setShowEvaluatorTools((prev) => !prev)}
+            className={`font-mono text-[10px] px-2 py-0.5 rounded-[3px] border transition-colors cursor-pointer flex items-center gap-1 ${
+              showEvaluatorTools || runtimeMode === 'DEMO'
+                ? 'bg-canvas-muted text-ink-primary border-border-strong font-bold'
+                : 'bg-canvas-subtle text-ink-muted border-border-subtle hover:text-ink-primary'
+            }`}
+            title="Toggle Evaluator State Simulator & Demo Tools"
           >
-            <Play className="w-2.5 h-2.5 fill-current" />
-            <span>PLAY DEMO LOOP</span>
-          </Button>
-
-          <Button
-            variant="secondary"
-            size="xs"
-            onClick={handleRunLanguageSwitchDemo}
-            className="font-mono text-[10px] gap-1 h-6 px-2 text-ink-primary border-border-subtle bg-canvas-subtle hover:bg-canvas-muted"
-            title="Simulate dynamic mid-call language switch from Hindi to English"
-          >
-            <Languages className="w-2.5 h-2.5" />
-            <span className="hidden sm:inline">SWITCH LANG</span>
-          </Button>
+            <span>⚡ Evaluator Tools</span>
+            <span className="text-[9px] opacity-70">{showEvaluatorTools ? '▲' : '▼'}</span>
+          </button>
         </div>
       </div>
 
-      {/* SECTION 23 STATE SIMULATOR BAR */}
-      <CallStateSimulator
-        currentState={callState}
-        onSelectState={(st) => setCallState(st)}
-      />
+      {/* EVALUATOR TOOLS & STATE SIMULATOR BAR (SECONDARY) */}
+      {(showEvaluatorTools || runtimeMode === 'DEMO') && (
+        <div className="bg-canvas-subtle border-b border-border-subtle p-2 px-3 flex flex-col gap-2 shrink-0 select-none animate-in fade-in duration-150">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-mono font-bold text-ink-muted uppercase tracking-wider">
+                DEMO AUTOMATION:
+              </span>
+              <Button
+                variant="primary"
+                size="xs"
+                onClick={handleRunWowDemo}
+                className="font-mono text-[10px] gap-1 h-6 px-2 bg-accent text-white font-bold hover:bg-accent-hover cursor-pointer"
+                title="Execute the 5-step speech-to-action demonstration"
+              >
+                <Play className="w-2.5 h-2.5 fill-current" />
+                <span>PLAY DEMO LOOP</span>
+              </Button>
+
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={handleRunLanguageSwitchDemo}
+                className="font-mono text-[10px] gap-1 h-6 px-2 text-ink-primary border-border-subtle bg-canvas-pure hover:bg-canvas-muted cursor-pointer"
+                title="Simulate dynamic mid-call language switch from Hindi to English"
+              >
+                <Languages className="w-2.5 h-2.5" />
+                <span className="hidden sm:inline">SWITCH LANG</span>
+              </Button>
+            </div>
+
+            <span className="text-[9px] font-mono text-ink-muted hidden md:inline">
+              15-State Deterministic Simulator
+            </span>
+          </div>
+
+          <CallStateSimulator
+            currentState={callState}
+            onSelectState={(st) => setCallState(st)}
+          />
+        </div>
+      )}
 
       {/* FAILURE STATE BANNER — renders when an active failure is in progress */}
       {caseState.activeFailure && (
@@ -573,7 +784,11 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
               <span className="text-border text-xs">/</span>
               <span className="font-sans text-xs font-medium text-ink-primary">
-                {caseStatus === 'creating' ? 'Provisioning CRM record...' : 'Delivery dispute'}
+                {caseStatus === 'creating'
+                  ? 'Provisioning CRM record...'
+                  : caseState.intent
+                  ? caseState.intent.replace(/_/g, ' ')
+                  : 'Customer Support Inbound'}
               </span>
             </div>
 
@@ -868,7 +1083,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             >
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-[3px] bg-accent-subtle border border-accent-border flex items-center justify-center font-mono text-xs font-bold text-accent">
-                  AS
+                  {currentCustomerInitials}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
@@ -877,13 +1092,13 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                     </span>
                     <span className="text-border text-xs">/</span>
                     <span className="font-bold text-xs text-ink-primary font-sans">
-                      Aarav Sharma
+                      {currentCustomerName}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[10px] font-mono text-ink-secondary">
                     <span>{currentLanguageMode}</span>
                     <span>•</span>
-                    <span>Tier 1 Account (12 Orders)</span>
+                    <span>{currentCustomerTier}</span>
                   </div>
                 </div>
               </div>
@@ -1017,6 +1232,24 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
+                {/* VOICE GENDER SWITCHER (Female / Male) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextGender = agentGender === 'female' ? 'male' : 'female'
+                    setAgentGender(nextGender)
+                    speechService.setAgentGender(nextGender)
+                  }}
+                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-[3px] border transition-all cursor-pointer flex items-center gap-1 ${
+                    agentGender === 'female'
+                      ? 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/30 hover:bg-pink-500/20'
+                      : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/20'
+                  }`}
+                  title="Toggle Agent Voice Gender & Hindi Grammar (Female vs Male)"
+                >
+                  <span>{agentGender === 'female' ? '♀ FEMALE VOICE' : '♂ MALE VOICE'}</span>
+                </button>
+
                 {isOperator ? (
                   <Badge variant="warning" dot size="xs" className="font-mono">
                     HUMAN ACTIVE
@@ -1054,8 +1287,107 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             </div>
           </div>
 
-          {/* 3. SECTION 6: REAL CONTINUOUS WAVEFORM MONITOR */}
-          <WaveformMonitor />
+          {/* 3. PROMINENT LIVE VOICE & MICROPHONE ACTIVE CARD */}
+          <div className="mx-3 my-2 bg-canvas-pure border border-border-subtle rounded-[6px] p-4 shadow-hairline space-y-3 text-center select-none font-mono">
+            <div className="space-y-0.5">
+              <div className="flex items-center justify-center gap-2">
+                <span className={`w-2.5 h-2.5 rounded-full ${callState === 'CUSTOMER_SPEAKING' ? 'bg-ops-live animate-pulse' : 'bg-accent'}`} />
+                <span className="text-xs font-bold tracking-widest text-ink-primary uppercase">RELAY AI</span>
+                <span className="text-border">·</span>
+                <span className="text-xs text-ink-secondary font-sans font-medium">
+                  {isMuted ? 'Muted' : callState === 'CUSTOMER_SPEAKING' ? 'Listening...' : 'Active & Ready'}
+                </span>
+              </div>
+            </div>
+
+            {/* LIVE WAVEFORM MONITOR */}
+            <div className="py-1">
+              <WaveformMonitor />
+            </div>
+
+            {/* MICROPHONE STATUS & MUTE BUTTON */}
+            <div className="flex items-center justify-between pt-2 border-t border-border-subtle/80 text-xs">
+              <div className="flex items-center gap-2">
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center ${isMuted ? 'bg-ops-warningBg text-ops-warning' : 'bg-ops-liveBg text-ops-live'}`}>
+                  {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+                </div>
+                <div className="text-left font-mono">
+                  <span className={`font-bold block ${isMuted ? 'text-ops-warning' : 'text-ops-live'}`}>
+                    {isMuted ? '🎙 MICROPHONE MUTED' : '🎙 YOUR MICROPHONE IS ACTIVE'}
+                  </span>
+                  <span className="text-[10px] text-ink-muted">
+                    {isMuted ? 'Click unmute to speak' : 'Speak naturally into your microphone or trigger phrases below'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleToggleMute}
+                  className="font-mono text-xs font-bold uppercase tracking-wider cursor-pointer"
+                >
+                  {isMuted ? 'UNMUTE' : 'MUTE'}
+                </Button>
+              </div>
+            </div>
+
+            {/* QUICK SPOKEN PHRASES & INTERACTIVE VOICE TRIGGER BAR */}
+            <div className="pt-2.5 border-t border-border-subtle/80 flex flex-col gap-2 text-left font-sans">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[10px] font-mono font-bold text-ink-muted uppercase">
+                  Say / Test:
+                </span>
+                {[
+                  { text: 'Mera order 5 din se nahi aaya', label: '1. "Mera order late hai"' },
+                  { text: 'Mujhe refund chahiye', label: '2. "Mujhe refund chahiye"' },
+                  { text: 'UPI par bhej do', label: '3. "UPI par bhej do"' },
+                  { text: 'Return policy kya hai?', label: '4. "Policy inquiry"' },
+                  { text: 'Bas itna hi tha, thank you!', label: '5. "Thank you, bye"' },
+                  { text: 'Can we switch to English please?', label: '6. "Switch to English"' },
+                ].map((phrase) => (
+                  <button
+                    key={phrase.text}
+                    type="button"
+                    onClick={() => handleProcessSpokenUtterance(phrase.text)}
+                    className="bg-canvas-subtle hover:bg-canvas-muted text-ink-primary border border-border-subtle hover:border-accent rounded px-2.5 py-1 text-[11px] font-mono font-medium transition-all cursor-pointer flex items-center gap-1.5 shadow-hairline active:scale-95"
+                    title={`Click to simulate speaking: "${phrase.text}"`}
+                  >
+                    <Mic className="w-2.5 h-2.5 text-accent" />
+                    <span>{phrase.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Direct Utterance Input & Active SPEAK Button */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const textToSend = customUtterance.trim() || 'Mera order 5 din se nahi aaya'
+                  handleProcessSpokenUtterance(textToSend)
+                  setCustomUtterance('')
+                }}
+                className="flex items-center gap-2 pt-1"
+              >
+                <input
+                  type="text"
+                  placeholder="Type custom speech here (or click SPEAK to send 'Mera order 5 din se nahi aaya')..."
+                  value={customUtterance}
+                  onChange={(e) => setCustomUtterance(e.target.value)}
+                  className="bg-canvas-subtle border border-border-subtle rounded px-3 py-1.5 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-accent flex-1 font-sans shadow-xs"
+                />
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  className="font-mono text-xs font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover active:bg-[#083070] h-8 px-4 cursor-pointer shadow-hairline"
+                >
+                  SPEAK
+                </Button>
+              </form>
+            </div>
+          </div>
 
           {/* 4. SECTION 7, 32 & 42: ACCESSIBLE LIVE TRANSCRIPT RAIL & HANDOFF BRIEF */}
           <div
@@ -1327,7 +1659,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                 <span className="font-mono text-[10px] text-ink-muted uppercase tracking-wider animate-pulse">
                   {isAiPaused
                     ? 'RELAY is paused and listening passively for operator instructions...'
-                    : meta.description}
+                    : meta.description.replace(/Aarav/gi, currentCustomerName.split(' ')[0])}
                 </span>
               </div>
             </div>

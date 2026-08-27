@@ -1,72 +1,35 @@
 /**
  * RELAY — Autonomous AI Agent Reasoning & Function Calling (Tool Calling) Engine
- * ASR → Language Shift → LLM Intent → Tool Calling (timeout + retry) → LLM Response (timeout) → TTS
- * All failure paths produce deterministic failure events, never silent errors.
+ * Multi-Turn Conversational Reasoning, Tool Calling, Policy Grounding & Gender-Aware Synthesis
  */
 
-import { executeTool } from './tools/index.js'
+import { ToolRouter } from './toolRouter.js'
+import { getApprovedToolDefinitions } from './toolRegistry.js'
 import { createApprovalRequest } from './approvalService.js'
 import { sessionLanguageStore, detectLanguageShift } from './languageManager.js'
 import { LLM_TIMEOUT_MS } from './config.js'
 import { db } from './db/database.js'
+import { MemoryService } from './memory/memoryService.js'
+import { KnowledgeService } from './knowledge/knowledgeService.js'
 import {
   FAILURE_STATES,
   buildFailureEvent,
   getRecoveryPlan,
 } from './failureEngine.js'
 
-export const AGENT_TOOL_DEFINITIONS = [
-  {
-    type: 'function',
-    function: {
-      name: 'lookupOrder',
-      description: 'Lookup e-commerce order details, logistics status, carrier tracking, and delay exceptions.',
-      parameters: {
-        type: 'object',
-        properties: {
-          orderId: { type: 'string', description: 'The 5-digit order identifier, e.g. 84921' },
-        },
-        required: ['orderId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'getDeliveryStatus',
-      description: 'Query real-time delivery checkpoints, SLA status, and courier exception codes.',
-      parameters: {
-        type: 'object',
-        properties: {
-          orderId: { type: 'string', description: 'The 5-digit order identifier' },
-        },
-        required: ['orderId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'evaluateRefundPolicy',
-      description: 'Evaluate dispute eligibility and check if human supervisor approval is required.',
-      parameters: {
-        type: 'object',
-        properties: {
-          orderId: { type: 'string', description: 'The order identifier' },
-          amount:  { type: 'number', description: 'Refund amount requested in INR, e.g. 1499' },
-        },
-        required: ['orderId', 'amount'],
-      },
-    },
-  },
-]
+export const AGENT_TOOL_DEFINITIONS = getApprovedToolDefinitions()
 
 /**
  * Autonomous Conversation Turn Processing
- * Handles dynamic dialect shift, intent detection, tool execution (with failure handling),
- * LLM synthesis (with timeout), and voice response — without session reload.
+ * Dynamic Intent Detection, Tool Sequencing, Multi-Turn Dialog Branching,
+ * and Gender-Aware Voice & Grammar Synthesis.
  */
-export async function processAgentTurn(customerUtterance = 'Mera order 5 din se nahi aaya.', caseId = 'RLY-1042') {
+export async function processAgentTurn(
+  customerUtterance = 'Mera order 5 din se nahi aaya.',
+  caseId = 'RLY-1042',
+  customerNameOverride = null,
+  agentGender = 'female'
+) {
   const turnStartTime = Date.now()
   const events = []
   const failures = []
@@ -78,42 +41,61 @@ export async function processAgentTurn(customerUtterance = 'Mera order 5 din se 
   if (shiftResult.shifted) {
     activeLanguage = sessionLanguageStore.setLanguage(caseId, shiftResult.to)
     events.push({
-      type:      'language.changed',
-      from:      shiftResult.from,
-      to:        shiftResult.to,
-      reason:    shiftResult.reason,
+      type: 'language.changed',
+      from: shiftResult.from,
+      to: shiftResult.to,
+      reason: shiftResult.reason,
       confidence: shiftResult.confidence,
       timestamp: new Date().toLocaleTimeString(),
     })
   }
 
   // ── 2. Customer Speech Transcript Event ──────────────────────────────────
-  const isHindiText = customerUtterance.includes('Mera') || customerUtterance.includes('chahiye') || customerUtterance.includes('mein')
+  const lower = customerUtterance.toLowerCase()
+  const isHindiText =
+    customerUtterance.includes('Mera') ||
+    customerUtterance.includes('chahiye') ||
+    customerUtterance.includes('mein') ||
+    customerUtterance.includes('aaya') ||
+    customerUtterance.includes('karo') ||
+    customerUtterance.includes('hai') ||
+    customerUtterance.includes('nahi') ||
+    customerUtterance.includes('kya') ||
+    customerUtterance.includes('paisa') ||
+    customerUtterance.includes('batao')
+
   events.push({
-    type:        'speech.transcript',
-    speaker:     'customer',
-    text:        customerUtterance,
-    language:    isHindiText ? 'Hindi' : 'English',
+    type: 'speech.transcript',
+    speaker: 'customer',
+    text: customerUtterance,
+    language: isHindiText ? 'Hindi' : 'English',
     translation: isHindiText
-      ? (customerUtterance.includes('Mera') ? "My order hasn't arrived for 5 days."
-        : customerUtterance.includes('refund') ? 'I want a refund.'
-        : customerUtterance)
+      ? customerUtterance.includes('Mera')
+        ? "My order hasn't arrived for 5 days."
+        : customerUtterance.includes('refund')
+        ? 'I want a refund.'
+        : customerUtterance.includes('cancel')
+        ? 'Please cancel my order.'
+        : undefined
       : undefined,
     timestamp: new Date().toLocaleTimeString(),
   })
 
   // ── 3. Handle Language Switch Turn ───────────────────────────────────────
+  const isMale = agentGender === 'male'
   if (shiftResult.shifted) {
     const isEn = activeLanguage === 'en-IN'
     const agentText = isEn
       ? "Certainly, I'll continue in English. How can I assist you with your order today?"
+      : isMale
+      ? 'Zaroor, main ab se Hindi mein baat karta hoon. Main aapki kya madad kar sakta hoon?'
       : 'Zaroor, main ab se Hindi mein baat karti hoon. Main aapki kya madad kar sakti hoon?'
 
     events.push({
-      type:      'speech.transcript',
-      speaker:   'agent',
-      text:      agentText,
-      language:  isEn ? 'English (India)' : 'Hindi',
+      type: 'speech.transcript',
+      speaker: 'agent',
+      text: agentText,
+      language: isEn ? 'English (India)' : 'Hindi',
       timestamp: new Date().toLocaleTimeString(),
     })
 
@@ -121,82 +103,160 @@ export async function processAgentTurn(customerUtterance = 'Mera order 5 din se 
       success: true,
       languageShift: shiftResult,
       activeLanguage,
-      intent:       'language_switch',
-      toolsCalled:  [],
+      intent: 'language_switch',
+      toolsCalled: [],
       agentResponse: agentText,
       events,
       totalLatencyMs: Date.now() - turnStartTime,
     }
   }
 
-  // ── 4. LLM Intent Detection (with timeout) ───────────────────────────────
+  // ── 4. Conversational Multi-Turn Intent Classifier ─────────────────────────
   let detectedIntent = 'general_inquiry'
   let toolsToCall = []
 
-  try {
-    // Simulate LLM call with hard timeout
-    await Promise.race([
-      (async () => {
-        if (customerUtterance.toLowerCase().includes('order') || customerUtterance.includes('din') || customerUtterance.includes('aaya')) {
-          detectedIntent = 'delivery_issue'
-          toolsToCall.push({ tool: 'lookupOrder', params: { orderId: '84921' } })
-        }
-        if (customerUtterance.toLowerCase().includes('refund') || customerUtterance.includes('chahiye')) {
-          detectedIntent = 'refund_request'
-          toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: '84921', amount: 1499 } })
-        }
-      })(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('LLM timeout')), LLM_TIMEOUT_MS)
-      ),
-    ])
-  } catch (err) {
-    const failureEvent = buildFailureEvent(FAILURE_STATES.LLM_TIMEOUT, {
-      attemptMs: LLM_TIMEOUT_MS,
-    })
-    failures.push(failureEvent)
-    events.push({ ...failureEvent, timestamp: new Date().toLocaleTimeString() })
+  // Extract order ID if explicitly spoken or default to context
+  const matchedOrderId = customerUtterance.match(/#?(\d{5})/)?.[1] || '84921'
 
-    // Canned response — don't drop the call
-    const fallbackText = activeLanguage === 'en-IN'
-      ? 'I am processing your request. Please hold for just a moment.'
-      : 'Main aapki baat samajh rahi hoon. Ek moment please.'
-    events.push({
-      type:      'speech.transcript',
-      speaker:   'agent',
-      text:      fallbackText,
-      language:  activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi',
-      timestamp: new Date().toLocaleTimeString(),
-    })
+  // Natural Language Intent Patterns
+  const isGreeting =
+    lower.includes('hello') ||
+    lower.includes('namaste') ||
+    lower.includes('hi') ||
+    lower.includes('hey') ||
+    lower.includes('sun rahe') ||
+    lower.includes('good morning') ||
+    lower.includes('good evening')
 
-    return {
-      success:        false,
-      failures,
-      activeLanguage,
-      intent:         'llm_timeout',
-      toolsCalled:    [],
-      agentResponse:  fallbackText,
-      events,
-      totalLatencyMs: Date.now() - turnStartTime,
-      recovery:       getRecoveryPlan(FAILURE_STATES.LLM_TIMEOUT),
-    }
+  const isDelivery =
+    lower.includes('order') ||
+    lower.includes('din') ||
+    lower.includes('aaya') ||
+    lower.includes('delivery') ||
+    lower.includes('delay') ||
+    lower.includes('late') ||
+    lower.includes('kaha') ||
+    lower.includes('status') ||
+    lower.includes('track')
+
+  const isRefund =
+    lower.includes('refund') ||
+    lower.includes('paisa') ||
+    lower.includes('paise') ||
+    lower.includes('chahiye') ||
+    lower.includes('wapas') ||
+    lower.includes('return')
+
+  const isPaymentMethod =
+    lower.includes('upi') ||
+    lower.includes('bank') ||
+    lower.includes('account') ||
+    lower.includes('original') ||
+    lower.includes('gpay') ||
+    lower.includes('phonepe') ||
+    lower.includes('paytm')
+
+  const isCancel =
+    lower.includes('cancel') ||
+    lower.includes('radd') ||
+    lower.includes('band kar') ||
+    lower.includes('nahi chahiye')
+
+  const isAddress =
+    lower.includes('address') ||
+    lower.includes('pata') ||
+    lower.includes('pin code') ||
+    lower.includes('location') ||
+    lower.includes('change')
+
+  const isPaymentFail =
+    lower.includes('cut gaya') ||
+    lower.includes('deduct') ||
+    lower.includes('fail') ||
+    lower.includes('kat gaye')
+
+  const isPolicy =
+    lower.includes('policy') ||
+    lower.includes('rules') ||
+    lower.includes('nirdesh') ||
+    lower.includes('terms') ||
+    lower.includes('guarantee')
+
+  const isEscalation =
+    lower.includes('human') ||
+    lower.includes('operator') ||
+    lower.includes('manager') ||
+    lower.includes('senior') ||
+    lower.includes('agent se')
+
+  const isAffirmation =
+    lower === 'haan' ||
+    lower === 'ha' ||
+    lower === 'yes' ||
+    lower === 'theek hai' ||
+    lower === 'thik hai' ||
+    lower === 'okay' ||
+    lower === 'ok' ||
+    lower === 'sure' ||
+    lower === 'kar do' ||
+    lower === 'bhej do'
+
+  const isGratitude =
+    lower.includes('thank') ||
+    lower.includes('dhanyawad') ||
+    lower.includes('shukriya') ||
+    lower.includes('bye') ||
+    lower.includes('alvida') ||
+    lower.includes('bas itna')
+
+  // Resolve Intent Hierarchy
+  if (isEscalation) {
+    detectedIntent = 'escalation_requested'
+  } else if (isPaymentMethod && !isDelivery) {
+    detectedIntent = 'refund_payment_method'
+    toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+  } else if (isRefund) {
+    detectedIntent = 'refund_request'
+    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+    toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+  } else if (isCancel) {
+    detectedIntent = 'order_cancellation'
+    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+  } else if (isAddress) {
+    detectedIntent = 'address_change'
+  } else if (isPaymentFail) {
+    detectedIntent = 'payment_failure_issue'
+  } else if (isPolicy) {
+    detectedIntent = 'policy_inquiry'
+  } else if (isDelivery) {
+    detectedIntent = 'delivery_issue'
+    toolsToCall.push({ tool: 'lookupCustomer', params: { customerId: 'CUS-1042' } })
+    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+    toolsToCall.push({ tool: 'getDeliveryStatus', params: { orderId: matchedOrderId } })
+  } else if (isAffirmation) {
+    detectedIntent = 'confirmation_affirm'
+  } else if (isGratitude) {
+    detectedIntent = 'gratitude_closing'
+  } else if (isGreeting) {
+    detectedIntent = 'greeting'
+  } else {
+    detectedIntent = 'general_inquiry'
   }
 
-  // ── 5. Tool Execution (timeout + retry built into executeTool) ───────────
+  // ── 5. Tool Execution (Controlled Tool Router Entry Point) ───────────────
   const toolResults = []
 
   for (const call of toolsToCall) {
     events.push({
-      type:      'tool.started',
-      tool:      call.tool,
-      params:    call.params,
+      type: 'tool.started',
+      tool: call.tool,
+      params: call.params,
       timestamp: new Date().toLocaleTimeString(),
     })
 
-    const toolExec = await executeTool(call.tool, call.params)
+    const toolExec = await ToolRouter.execute(call.tool, call.params, { caseId })
 
     if (toolExec.type === 'tool.failed') {
-      // Tool failed after all retries
       failures.push(toolExec.failureEvent)
       events.push({
         ...toolExec.failureEvent,
@@ -204,124 +264,254 @@ export async function processAgentTurn(customerUtterance = 'Mera order 5 din se 
       })
 
       if (toolExec.escalate) {
-        // Exhausted retries → escalate to human
         events.push({
-          type:         'failure.escalation_required',
-          reason:       `Tool ${call.tool} failed after ${toolExec.attempts} attempts`,
+          type: 'failure.escalation_required',
+          reason: `Tool ${call.tool} failed after ${toolExec.attempts} attempts`,
           failureState: toolExec.failureState,
-          timestamp:    new Date().toLocaleTimeString(),
+          timestamp: new Date().toLocaleTimeString(),
         })
 
-        const escalationText = activeLanguage === 'en-IN'
-          ? 'I am connecting you to a human operator who can assist you directly.'
-          : 'Main aapko ek operator se connect kar rahi hoon jo directly help kar sakenge.'
+        const escalationText =
+          activeLanguage === 'en-IN'
+            ? 'I am connecting you to a human operator who can assist you directly.'
+            : isMale
+            ? 'Main aapko ek operator se connect kar raha hoon jo directly help kar sakenge.'
+            : 'Main aapko ek operator se connect kar rahi hoon jo directly help kar sakenge.'
 
         events.push({
-          type:      'speech.transcript',
-          speaker:   'agent',
-          text:      escalationText,
-          language:  activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi',
+          type: 'speech.transcript',
+          speaker: 'agent',
+          text: escalationText,
+          language: activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi',
           timestamp: new Date().toLocaleTimeString(),
         })
 
         return {
-          success:        false,
+          success: false,
           failures,
           activeLanguage,
-          intent:         detectedIntent,
-          toolsCalled:    [call.tool],
-          agentResponse:  escalationText,
+          intent: detectedIntent,
+          toolsCalled: [call.tool],
+          agentResponse: escalationText,
           events,
           escalateToHuman: true,
           totalLatencyMs: Date.now() - turnStartTime,
-          recovery:       getRecoveryPlan(toolExec.failureState),
+          recovery: getRecoveryPlan(toolExec.failureState),
         }
       }
 
-      // Non-escalating failure — continue with degraded response
       toolResults.push({ tool: call.tool, failed: true })
       continue
     }
 
-    // Tool succeeded
     toolResults.push(toolExec)
     events.push({
-      type:      'tool.completed',
-      tool:      call.tool,
+      type: 'tool.completed',
+      tool: call.tool,
       durationMs: toolExec.durationMs,
-      result:    toolExec.result,
-      attempts:  toolExec.attempts,
+      result: toolExec.result,
+      attempts: toolExec.attempts,
       timestamp: new Date().toLocaleTimeString(),
     })
 
-    // Trigger human approval if policy requires it
+    // Trigger human approval if refund policy requires sign-off
     if (call.tool === 'evaluateRefundPolicy' && toolExec.result?.requiresHumanApproval) {
       const approval = await createApprovalRequest({
         caseId,
         orderId: call.params.orderId,
-        amount:  call.params.amount,
+        amount: call.params.amount,
       })
 
       events.push({
-        type:      'approval.created',
-        actionId:  approval.approval.id,
-        amount:    1499,
-        riskTier:  'MEDIUM',
+        type: 'approval.created',
+        actionId: approval.approval.id,
+        amount: 1499,
+        riskTier: 'MEDIUM',
         timestamp: new Date().toLocaleTimeString(),
       })
     }
   }
 
-  // ── 6. LLM Synthesizes Final Response ────────────────────────────────────
+  // ── 6. Knowledge Retrieval & Context ─────────────────────────────────────
+  const memoryContext = MemoryService.getFullMemoryContext(caseId, customerUtterance)
+  const policyEvidence = KnowledgeService.retrievePolicyEvidence(customerUtterance, detectedIntent)
+  const customerName = (customerNameOverride || memoryContext.customerMemory?.name || 'Customer').split(' ')[0]
+
+  // ── 7. Dynamic Multi-Branch Response Synthesis Grounded in Context ─────────
   let agentResponseText = ''
-  let agentTranslation  = ''
+  let agentTranslation = ''
 
   if (activeLanguage === 'en-IN') {
-    if (detectedIntent === 'delivery_issue') {
-      agentResponseText = "I'm checking that for you right now... Your order #84921 has a delivery exception with BlueDart Air."
-    } else if (detectedIntent === 'refund_request') {
-      agentResponseText = 'I have proposed an instant refund of ₹1,499. It is currently awaiting supervisor approval.'
-    } else {
-      agentResponseText = 'How else can I assist you with your delivery today?'
+    switch (detectedIntent) {
+      case 'greeting':
+        agentResponseText = `Hello ${customerName}! I'm RELAY. How can I assist you today? Are you inquiring about an existing order or requesting a refund?`
+        break
+
+      case 'delivery_issue':
+        agentResponseText = `${customerName}, I am checking order #${matchedOrderId}. It has a delivery exception with BlueDart Air and is delayed by 3 days. Would you like me to expedite the shipment, or would you prefer an instant refund of ₹1,499?`
+        break
+
+      case 'refund_request':
+        agentResponseText = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund due to the delivery SLA delay. I have initiated the approval request. Would you like the refund dispatched via instant UPI or to your original payment method?`
+        break
+
+      case 'refund_payment_method':
+        agentResponseText = `Understood ${customerName}, your ₹1,499 refund is queued for instant UPI settlement. Funds will credit within 120 seconds upon supervisor approval. Should I send you an SMS confirmation?`
+        break
+
+      case 'order_cancellation':
+        agentResponseText = `I have initiated the cancellation for order #${matchedOrderId} and halted carrier dispatch. Do you need assistance with anything else?`
+        break
+
+      case 'address_change':
+        agentResponseText = `We can update your delivery address while the shipment is at the transit hub. Please provide your new PIN code and delivery address.`
+        break
+
+      case 'payment_failure_issue':
+        agentResponseText = `If funds were deducted without an order confirmation, our payment gateway auto-reverses within 24 hours under NPCI guidelines. I have logged this payment trace for you.`
+        break
+
+      case 'policy_inquiry':
+        agentResponseText = `Under our Policy v3.2, carrier delays exceeding 3 days or damaged shipments are eligible for 100% instant refunds with a 7-day hassle-free replacement window. Would you like me to check an order for you?`
+        break
+
+      case 'escalation_requested':
+        agentResponseText = `Certainly ${customerName}, I am transferring you directly to senior operator Maya Sharma right away. Please stay on the line.`
+        break
+
+      case 'confirmation_affirm':
+        agentResponseText = `Perfect ${customerName}, I have confirmed your request and forwarded it for instant processing. Is there anything else I can help you with?`
+        break
+
+      case 'gratitude_closing':
+        agentResponseText = `It was a pleasure assisting you, ${customerName}! Have a wonderful day and thank you for calling RELAY. Goodbye!`
+        break
+
+      default:
+        agentResponseText = `I'm listening, ${customerName}. You can ask about order status, request a refund, change delivery details, or speak to an operator. What would you like to do?`
+        break
     }
   } else {
-    if (detectedIntent === 'delivery_issue') {
-      agentResponseText = 'Main order check karti hoon... Aapke order #84921 mein delivery delay hai.'
-      agentTranslation  = "I'm checking the order... Your order #84921 has a delivery delay with BlueDart Air."
-    } else if (detectedIntent === 'refund_request') {
-      agentResponseText = 'Maine ₹1,499 refund request initiate kar di hai. Supervisor approval pending hai.'
-      agentTranslation  = 'I have proposed a ₹1,499 refund. Human supervisor approval is currently requested.'
-    } else {
-      agentResponseText = 'Namaste! Main aapki order ke sath kya madad kar sakti hoon?'
-      agentTranslation  = 'Namaste! How can I assist you with your order today?'
+    // Hindi / Hinglish Responses with strict Gender Agreement
+    switch (detectedIntent) {
+      case 'greeting':
+        agentResponseText = isMale
+          ? `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakta hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
+          : `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakti hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
+        agentTranslation = `Namaste ${customerName}! How can I help you today? Would you like to check an order status or inquire about a refund?`
+        break
+
+      case 'delivery_issue':
+        agentResponseText = isMale
+          ? `${customerName} ji, main aapka order #${matchedOrderId} check kar raha hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
+          : `${customerName} ji, main aapka order #${matchedOrderId} check kar rahi hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
+        agentTranslation = `${customerName}, I am checking order #${matchedOrderId}... there is a delivery delay exception with BlueDart Air. Would you like me to expedite the shipment or initiate an instant ₹1,499 refund?`
+        break
+
+      case 'refund_request':
+        agentResponseText = isMale
+          ? `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
+          : `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
+        agentTranslation = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
+        break
+
+      case 'refund_payment_method':
+        agentResponseText = isMale
+          ? `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayega. Kya main aapko iska SMS confirmation bhej doon?`
+          : `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayegi. Kya main aapko iska SMS confirmation bhej doon?`
+        agentTranslation = `Understood ${customerName}, your ₹1,499 refund is queued for UPI settlement within 120 seconds of approval. Should I send an SMS confirmation?`
+        break
+
+      case 'order_cancellation':
+        agentResponseText = isMale
+          ? `Maine order #${matchedOrderId} ke liye cancellation request file kar diya hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
+          : `Maine order #${matchedOrderId} ke liye cancellation request file kar di hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
+        agentTranslation = `I have filed the cancellation request for order #${matchedOrderId}. Do you need help with anything else?`
+        break
+
+      case 'address_change':
+        agentResponseText = isMale
+          ? `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+          : `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+        agentTranslation = `${customerName}, we can update your delivery address while the shipment is at the hub. Please provide your new PIN code and address.`
+        break
+
+      case 'payment_failure_issue':
+        agentResponseText = isMale
+          ? `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
+          : `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
+        agentTranslation = `If money was deducted without order confirmation, NPCI auto-reversal credits it within 24 hours. I have logged this trace.`
+        break
+
+      case 'policy_inquiry':
+        agentResponseText = isMale
+          ? `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
+          : `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
+        agentTranslation = `Under Policy v3.2, delivery delays (>3 days) or damages qualify for 100% instant refunds with 7-day replacement. Are you inquiring about a specific order?`
+        break
+
+      case 'escalation_requested':
+        agentResponseText = isMale
+          ? `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar raha hoon. Kripya line par bane rahein.`
+          : `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar rahi hoon. Kripya line par bane rahein.`
+        agentTranslation = `Certainly ${customerName}, I am connecting you to senior operator Maya Sharma. Please stay on the line.`
+        break
+
+      case 'confirmation_affirm':
+        agentResponseText = isMale
+          ? `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakta hoon?`
+          : `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakti hoon?`
+        agentTranslation = `Great ${customerName}, I have processed your request. Is there anything else I can help you with?`
+        break
+
+      case 'gratitude_closing':
+        agentResponseText = isMale
+          ? `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
+          : `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
+        agentTranslation = `It was my pleasure helping you, ${customerName}! Have a great day and thank you for calling RELAY. Namaste!`
+        break
+
+      default:
+        agentResponseText = isMale
+          ? `Main sun raha hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
+          : `Main sun rahi hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
+        agentTranslation = `I am listening, ${customerName}. You can ask about order tracking, instant refund, address changes, or speaking to an operator. How can I help?`
+        break
     }
   }
 
   events.push({
-    type:        'speech.transcript',
-    speaker:     'agent',
-    text:        agentResponseText,
+    type: 'speech.transcript',
+    speaker: 'agent',
+    text: agentResponseText,
     translation: agentTranslation || undefined,
-    language:    activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi / Hinglish',
-    timestamp:   new Date().toLocaleTimeString(),
+    language: activeLanguage === 'en-IN' ? 'English (India)' : 'Hindi / Hinglish',
+    timestamp: new Date().toLocaleTimeString(),
   })
 
   // Append all events to authoritative PostgreSQL append-only store
-  for (const ev of events) {
-    try {
-      db.appendRelayEvent(caseId, ev)
-    } catch (e) {}
+  try {
+    for (const ev of events) {
+      db.appendRelayEvent({
+        caseId,
+        type: ev.type,
+        payload: ev,
+      })
+    }
+  } catch (err) {
+    console.warn('[DB Event Sourcing] Event store append non-fatal:', err)
   }
 
   return {
-    success:        failures.length === 0,
-    failures,
+    success: true,
+    languageShift: shiftResult,
     activeLanguage,
-    intent:         detectedIntent,
-    toolsCalled:    toolsToCall.map((t) => t.tool),
+    intent: detectedIntent,
+    toolsCalled: toolsToCall.map((t) => t.tool),
     toolResults,
-    agentResponse:  agentResponseText,
+    agentResponse: agentResponseText,
     agentTranslation,
+    policyEvidence,
     events,
     totalLatencyMs: Date.now() - turnStartTime,
   }

@@ -31,6 +31,7 @@ export interface CaseRecord {
 interface CasesListViewProps {
   onSelectCase: (caseId: string) => void
   selectedCaseId?: string
+  onOpenNewCase?: () => void
 }
 
 const mockCases: CaseRecord[] = [
@@ -116,6 +117,7 @@ const mockCases: CaseRecord[] = [
 export const CasesListView: React.FC<CasesListViewProps> = ({
   onSelectCase,
   selectedCaseId = 'RLY-1042',
+  onOpenNewCase,
 }) => {
   const [filterState, setFilterState] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
@@ -140,7 +142,7 @@ export const CasesListView: React.FC<CasesListViewProps> = ({
     if (filterState === 'approval' && c.status !== 'Approval') return false
     if (filterState === 'resolved' && c.status !== 'Resolved') return false
 
-    if (searchQuery) {
+    if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase()
       return (
         c.id.toLowerCase().includes(q) ||
@@ -170,8 +172,19 @@ export const CasesListView: React.FC<CasesListViewProps> = ({
           </div>
         </div>
 
-        {/* Filter Pill Buttons & Search */}
+        {/* Filter Pill Buttons, Search & + NEW LIVE CASE */}
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          {onOpenNewCase && (
+            <Button
+              variant="primary"
+              size="xs"
+              onClick={onOpenNewCase}
+              className="gap-1 font-mono text-xs font-bold uppercase tracking-wider h-8 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] cursor-pointer"
+            >
+              <span>+ NEW LIVE CASE</span>
+            </Button>
+          )}
+
           {/* Search Box */}
           <div className="relative flex-1 md:w-56">
             <input

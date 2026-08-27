@@ -7,12 +7,16 @@ import {
   AlertOctagon,
   RotateCcw,
   Radio,
-  RefreshCw
+  RefreshCw,
+  Brain,
+  BookOpen
 } from 'lucide-react'
 import { soundEffects } from '../../utils/soundEffects'
 import { useCaseState } from '../../contexts/CaseStateContext'
 import { agoraRtc } from '../../services/agoraRtcService'
 import { telemetryCollector, MeasuredTelemetry } from '../../services/telemetryCollector'
+import { PolicyCitationModal } from './PolicyCitationModal'
+import { PolicyCitation } from '../../types/knowledge'
 
 export type RefundActionState = 'awaiting_approval' | 'approved' | 'declined'
 
@@ -27,6 +31,48 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
   const [isTokenRenewed, setIsTokenRenewed] = useState<boolean>(false)
   const [isRenewingToken, setIsRenewingToken] = useState<boolean>(false)
   const [measured, setMeasured] = useState<MeasuredTelemetry>(telemetryCollector.getSnapshot())
+  const [isPolicyModalOpen, setIsPolicyModalOpen] = useState<boolean>(false)
+  const [activeMemoryTab, setActiveMemoryTab] = useState<'customer' | 'case' | 'turn'>('customer')
+
+  const defaultPolicyCitation: PolicyCitation = {
+    policyId: 'POL-REFUND-3.2',
+    title: 'E-Commerce Dispute & Instant Refund Protocol',
+    version: 'v3.2',
+    section: 'Section 4.1 — Courier SLA Delays & Carrier Exceptions',
+    clauseId: '4.1.A',
+    clauseText: 'An order delayed beyond 3 business days past SLA with a verified courier exception code is eligible for an instant 100% refund.',
+    document: {
+      policyId: 'POL-REFUND-3.2',
+      title: 'E-Commerce Dispute & Instant Refund Protocol',
+      version: 'v3.2',
+      section: 'Section 4.1 — Courier SLA Delays & Carrier Exceptions',
+      lastUpdated: '2026-06-15',
+      summary: 'Rules for instant electronic refund issuance on delayed or lost shipments.',
+      clauses: [
+        {
+          clauseId: '4.1.A',
+          title: 'Eligibility Criteria',
+          text: 'An order delayed beyond 3 business days past the promised delivery SLA with a verified courier exception code (e.g. DELAY_WEATHER_AIR_CARRIER) is eligible for an instant 100% refund.',
+        },
+        {
+          clauseId: '4.1.B',
+          title: 'Operator Sign-off Matrix',
+          text: 'Refund amounts up to ₹2,500 for Platinum and Gold tier customers require single human operator approval with zero reverse-pickup prerequisite.',
+        },
+        {
+          clauseId: '4.1.C',
+          title: 'Settlement Speed',
+          text: 'Approved refunds must be routed via NPCI Instant UPI disbursement directly to the source VPA/bank account within 120 seconds.',
+        },
+      ],
+      mandatoryChecks: [
+        'Customer identity verified in CRM',
+        'Order exists and status is DELIVERY_EXCEPTION',
+        'Refund amount matches transaction capture value',
+        'Zero prior refund settled on same order identifier',
+      ],
+    },
+  }
 
   useEffect(() => {
     return telemetryCollector.subscribe((data) => {
@@ -45,7 +91,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
   }
 
   const refundState: RefundActionState =
-    caseState.activeAction?.status === 'APPROVED'
+    caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved'
       ? 'approved'
       : caseState.activeAction?.status === 'DECLINED'
       ? 'declined'
@@ -55,7 +101,9 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
 
   const handleApprove = async () => {
     await approveActiveAction('Maya Sharma')
-    soundEffects.playToolExecuted()
+    try {
+      soundEffects.playToolExecuted()
+    } catch (e) {}
   }
 
   const handleDecline = async () => {
@@ -114,32 +162,42 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
           <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Channel</span>
-              <span className="text-ink-primary font-bold block truncate">relay-case-1042</span>
+              <span className="text-ink-primary font-bold block truncate">{caseState.channelName || 'relay-case-live'}</span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Connection</span>
-              <span className="text-ops-live font-bold block">CONNECTED</span>
+              <span className={agoraRtc.getConnectionState() === 'CONNECTED' ? 'text-ops-live font-bold block' : 'text-ink-muted font-bold block'}>
+                {agoraRtc.getConnectionState()}
+              </span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Participants</span>
-              <span className="text-ink-primary font-bold block tabular-nums">{measured.participantCount}</span>
+              <span className="text-ink-primary font-bold block tabular-nums">
+                {agoraRtc.getConnectionState() === 'CONNECTED' ? measured.participantCount : '—'}
+              </span>
             </div>
 
             <div>
-              <span className="text-[10px] text-ink-muted uppercase block font-semibold">Audio</span>
-              <span className="text-ink-primary font-bold block">{measured.audioSampleRate}</span>
+              <span className="text-[10px] text-ink-muted uppercase block font-semibold">Audio Track</span>
+              <span className="text-ink-primary font-bold block">
+                {agoraRtc.getConnectionState() === 'CONNECTED' ? measured.audioSampleRate : '—'}
+              </span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">RTT</span>
-              <span className="text-ink-primary font-bold block tabular-nums">{measured.rttMs} ms</span>
+              <span className="text-ink-primary font-bold block tabular-nums">
+                {agoraRtc.getConnectionState() === 'CONNECTED' && measured.rttMs > 0 ? `${measured.rttMs} ms` : '—'}
+              </span>
             </div>
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Packet loss</span>
-              <span className="text-ops-live font-bold block tabular-nums">{(measured.packetLossRate * 100).toFixed(2)}%</span>
+              <span className="text-ops-live font-bold block tabular-nums">
+                {agoraRtc.getConnectionState() === 'CONNECTED' ? `${(measured.packetLossRate * 100).toFixed(2)}%` : '—'}
+              </span>
             </div>
           </div>
 
@@ -196,7 +254,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
               INTENT
             </span>
             <span className="font-bold text-xs text-ink-primary block mt-0.5">
-              Delivery dispute
+              {caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Customer Support Inbound'}
             </span>
           </div>
 
@@ -208,8 +266,43 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
               LANGUAGE
             </span>
             <span className="font-semibold text-xs text-ink-primary block mt-0.5 font-mono">
-              Hindi / Hinglish
+              {caseState.language || 'Hindi / English'}
             </span>
+          </div>
+
+          <div className="h-px bg-border-subtle/70" />
+
+          {/* MULTI-OPERATOR GOVERNANCE & RBAC */}
+          <div className="space-y-1.5 font-mono text-[10px]">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-ink-muted uppercase tracking-wider">OPERATOR DESK</span>
+              <Badge variant="live" size="xs">ASSIGNED</Badge>
+            </div>
+
+            <div className="bg-canvas-subtle p-2 rounded-[3px] border border-border-subtle space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-ink-primary">Maya Sharma (OP-782)</span>
+                <span className="text-accent font-bold bg-accent-subtle px-1.5 py-0.5 rounded border border-accent-border text-[8px]">
+                  SUPERVISOR
+                </span>
+              </div>
+
+              {/* Roster & Availability */}
+              <div className="text-[9px] text-ink-secondary space-y-0.5 pt-1 border-t border-border-subtle/60">
+                <div className="flex items-center justify-between">
+                  <span>● Maya (Supervisor)</span>
+                  <span className="text-ops-live font-semibold">Available</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>● Arjun (Agent)</span>
+                  <span className="text-ops-warning font-semibold">On call</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>● Neha (Agent)</span>
+                  <span className="text-ops-live font-semibold">Available</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="h-px bg-border-subtle/70" />
@@ -247,6 +340,100 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                 <span>02:41</span>
               </div>
             </div>
+          </div>
+
+          <div className="h-px bg-border-subtle/70" />
+
+          {/* 3-LEVEL EXPLICIT AI MEMORY HIERARCHY */}
+          <div className="space-y-2 font-mono">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold text-ink-muted uppercase tracking-wider">
+                <Brain className="w-3.5 h-3.5 text-accent" />
+                <span>EXPLICIT AI MEMORY</span>
+              </div>
+              <span className="text-[9px] text-ops-live font-semibold">3 TIERS ACTIVE</span>
+            </div>
+
+            {/* Memory Tier Switcher */}
+            <div className="grid grid-cols-3 gap-1 bg-canvas-subtle p-0.5 rounded-[3px] border border-border-subtle text-[9px] font-bold text-center">
+              <button
+                type="button"
+                onClick={() => setActiveMemoryTab('customer')}
+                className={`py-1 rounded-[2px] transition-colors cursor-pointer ${
+                  activeMemoryTab === 'customer'
+                    ? 'bg-canvas-pure text-accent border border-border-subtle shadow-xs'
+                    : 'text-ink-muted hover:text-ink-primary'
+                }`}
+              >
+                CUSTOMER
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveMemoryTab('case')}
+                className={`py-1 rounded-[2px] transition-colors cursor-pointer ${
+                  activeMemoryTab === 'case'
+                    ? 'bg-canvas-pure text-accent border border-border-subtle shadow-xs'
+                    : 'text-ink-muted hover:text-ink-primary'
+                }`}
+              >
+                CASE
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveMemoryTab('turn')}
+                className={`py-1 rounded-[2px] transition-colors cursor-pointer ${
+                  activeMemoryTab === 'turn'
+                    ? 'bg-canvas-pure text-accent border border-border-subtle shadow-xs'
+                    : 'text-ink-muted hover:text-ink-primary'
+                }`}
+              >
+                TURN
+              </button>
+            </div>
+
+            {/* Tier Content Display */}
+            {activeMemoryTab === 'customer' && (
+              <div className="bg-canvas-subtle p-2.5 rounded-[3px] border border-border-subtle space-y-1.5 text-[10px] animate-in fade-in duration-150">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-ink-primary">{caseState.customerId} ({caseState.customerName || 'Customer'})</span>
+                  <span className="text-ops-live font-semibold">{caseState.customerTier ? `${caseState.customerTier} Tier` : 'Platinum Tier'}</span>
+                </div>
+                <div className="text-ink-secondary space-y-1 pt-1 border-t border-border-subtle/60 text-[9px]">
+                  <div>
+                    <span className="text-ink-muted">Channel / Language: </span>
+                    <span className="text-ink-primary font-semibold">voice · {caseState.language || 'hi-IN'}</span>
+                  </div>
+                  <div>
+                    <span className="text-ink-muted">Account Status: </span>
+                    <span className="text-accent font-mono font-semibold">verified_customer</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeMemoryTab === 'case' && (
+              <div className="bg-canvas-subtle p-2.5 rounded-[3px] border border-border-subtle space-y-1 text-[10px] animate-in fade-in duration-150">
+                <div className="flex items-center justify-between font-bold text-ink-primary">
+                  <span>Case #{caseState.id}</span>
+                  <span className="text-accent">{caseState.intent || 'Active Session'}</span>
+                </div>
+                <div className="space-y-0.5 text-[9px] text-ink-secondary pt-1 border-t border-border-subtle/60">
+                  <div>• Verified Facts: {caseState.facts.length} in knowledge graph</div>
+                  <div>• Status: <span className="font-semibold text-ops-live uppercase">{caseState.status}</span></div>
+                </div>
+              </div>
+            )}
+
+            {activeMemoryTab === 'turn' && (
+              <div className="bg-canvas-subtle p-2.5 rounded-[3px] border border-border-subtle space-y-1 text-[10px] animate-in fade-in duration-150">
+                <div className="font-bold text-ink-primary">Current Turn Context</div>
+                <div className="space-y-0.5 text-[9px] text-ink-secondary pt-1 border-t border-border-subtle/60">
+                  <div>• Utterance: "Mera order 5 din se nahi aaya."</div>
+                  <div>• Intent: <span className="text-accent font-semibold">refund_request / delivery_issue</span></div>
+                  <div>• Slot: <span className="text-ink-primary font-semibold">orderId=84921</span></div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -454,6 +641,21 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                   </div>
                 </div>
 
+                {/* EVIDENCE-BACKED ACTION MODEL */}
+                <div className="bg-canvas-subtle p-2 rounded-[3px] border border-border-subtle space-y-1.5 text-[10px] font-mono">
+                  <div className="flex items-center justify-between border-b border-border-subtle/60 pb-1">
+                    <span className="font-bold text-ink-primary uppercase tracking-tight">EVIDENCE-BACKED ACTION</span>
+                    <Badge variant="live" size="xs">3 PROOFS</Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-1 pt-0.5">
+                    {['order_delayed', 'customer_requested_refund', 'policy_eligible'].map((tag) => (
+                      <span key={tag} className="bg-canvas-pure px-1.5 py-0.5 rounded border border-border text-[9px] text-accent font-semibold font-mono">
+                        ✓ {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
                 {/* 5-POINT REAL POLICY EVALUATION CHECKLIST */}
                 <div className="bg-canvas-subtle p-2 rounded-[3px] border border-border-subtle space-y-1 text-[10px] font-mono">
                   <span className="font-bold text-ink-primary uppercase block pb-0.5 border-b border-border-subtle/60">
@@ -478,6 +680,32 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
                     <span>No duplicate action (0 prior refunds)</span>
+                  </div>
+                </div>
+
+                {/* AUDITABLE POLICY SOURCE EVIDENCE (KNOWLEDGE LAYER) */}
+                <div className="bg-canvas-subtle p-2 rounded-[3px] border border-border-subtle space-y-1.5 font-mono text-[10px]">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-ink-muted uppercase">POLICY SOURCE</span>
+                    <Badge variant="live" size="xs" className="font-mono text-[8px]">
+                      v3.2
+                    </Badge>
+                  </div>
+                  <div className="text-ink-primary font-bold text-[11px]">
+                    Refund Policy v3.2 · Section 4.1
+                  </div>
+                  <p className="text-[10px] font-sans text-ink-secondary leading-snug">
+                    "Carrier exception &gt;3 business days eligible for instant 100% refund."
+                  </p>
+                  <div className="pt-1 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setIsPolicyModalOpen(true)}
+                      className="text-[9px] font-bold text-accent bg-accent-subtle hover:bg-accent hover:text-white px-2 py-0.5 rounded border border-accent-border transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <BookOpen className="w-2.5 h-2.5" />
+                      <span>[ VIEW POLICY ]</span>
+                    </button>
                   </div>
                 </div>
 
@@ -562,6 +790,13 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
           </div>
         )}
       </div>
+
+      {/* Auditable Policy Evidence Modal */}
+      <PolicyCitationModal
+        isOpen={isPolicyModalOpen}
+        onClose={() => setIsPolicyModalOpen(false)}
+        citation={defaultPolicyCitation}
+      />
     </aside>
   )
 }

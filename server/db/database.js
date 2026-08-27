@@ -170,10 +170,20 @@ class RelayDatabase {
 
   // ── Append-Only Event Operations ──────────────────────────────────────────
   /**
+   * Register a live realtime listener for Server-Sent Events (SSE).
+   */
+  subscribe(callback) {
+    if (!this.sseSubscribers) this.sseSubscribers = new Set()
+    this.sseSubscribers.add(callback)
+    return () => this.sseSubscribers.delete(callback)
+  }
+
+  /**
    * Append a new Relay Event to the canonical immutable log.
    * Monotonically increases sequence_num for that case.
    */
   appendRelayEvent(caseId, eventData) {
+    if (!this.sseSubscribers) this.sseSubscribers = new Set()
     const caseEvents = this.relayEvents.filter((e) => e.case_id === caseId)
     const nextSeq = caseEvents.length + 1
 
@@ -181,13 +191,21 @@ class RelayDatabase {
       id: `ev-${caseId.toLowerCase().replace(/[^a-z0-9]/g, '')}-${nextSeq}`,
       case_id: caseId,
       sequence_num: nextSeq,
-      event_type: eventData.type || 'unknown',
+      event_type: eventData.type || eventData.event_type || 'unknown',
       payload: eventData.payload || eventData,
       timestamp: eventData.timestamp || new Date().toLocaleTimeString(),
       created_at: new Date().toISOString(),
     }
 
     this.relayEvents.push(eventRecord)
+
+    // Broadcast to live SSE subscribers immediately (Zero Polling)
+    this.sseSubscribers.forEach((cb) => {
+      try {
+        cb(eventRecord)
+      } catch (err) {}
+    })
+
     return eventRecord
   }
 

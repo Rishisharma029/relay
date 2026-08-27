@@ -3,13 +3,14 @@
  * Logistics SLA check and order lookup via gRPC proxy simulation.
  */
 
-export const mockOrdersDatabase = {
+export const ordersDatabase = {
   '84921': {
     orderId: '84921',
-    amountInr: 1499,
+    amount: 1499,
+    currency: 'INR',
     placedAt: '2026-08-21T14:20:00Z',
     expectedDelivery: '2026-08-24T18:00:00Z',
-    status: 'DELIVERY_EXCEPTION',
+    status: 'delivery_exception',
     carrier: 'BlueDart Air',
     trackingNumber: 'BD-948192841',
     lastLocation: 'Hub 04 (Outer Ring Logistics Terminal)',
@@ -19,27 +20,55 @@ export const mockOrdersDatabase = {
   },
 }
 
+/**
+ * Normalizes order identifiers like '#84921', '84921', 'ORD-84921'
+ */
+function normalizeOrderId(id) {
+  if (!id) return '84921'
+  const clean = String(id).replace(/[^0-9]/g, '')
+  return clean || '84921'
+}
+
 export async function lookupOrder(orderId = '84921') {
+  // Simulate gRPC database query latency
   await new Promise((res) => setTimeout(res, 85))
 
-  const order = mockOrdersDatabase[orderId] || mockOrdersDatabase['84921']
+  const cleanId = normalizeOrderId(orderId)
+  const order = ordersDatabase[cleanId] || ordersDatabase['84921']
+
   return {
-    found: true,
-    order,
+    success: true,
+    orderId: order.orderId,
+    status: order.status,
+    amount: order.amount,
+    currency: order.currency,
+    carrier: order.carrier,
+    trackingNumber: order.trackingNumber,
+    delayDays: order.delayDays,
+    placedAt: order.placedAt,
+    items: order.items,
   }
 }
 
 export async function getDeliveryStatus(orderId = '84921') {
+  // Simulate carrier API latency
   await new Promise((res) => setTimeout(res, 99))
 
-  const order = mockOrdersDatabase[orderId] || mockOrdersDatabase['84921']
+  const cleanId = normalizeOrderId(orderId)
+  const order = ordersDatabase[cleanId] || ordersDatabase['84921']
+
   return {
+    success: true,
     orderId: order.orderId,
     status: order.status,
+    amount: order.amount,
+    currency: order.currency,
+    carrier: order.carrier,
+    trackingNumber: order.trackingNumber,
+    lastCheckpoint: order.lastLocation,
     delayDays: order.delayDays,
     expectedDelivery: order.expectedDelivery,
-    carrier: order.carrier,
-    lastCheckpoint: order.lastLocation,
     isSlaBreached: order.delayDays > 0,
+    exceptionCode: order.exceptionCode,
   }
 }

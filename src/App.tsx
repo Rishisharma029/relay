@@ -16,6 +16,8 @@ import { LandingPortalView } from './views/LandingPortalView'
 import { SystemHealthView } from './views/SystemHealthView'
 import { MobileWorkspace } from './components/mobile/MobileWorkspace'
 import { agoraRtm } from './services/agoraRtmService'
+import { NewLiveCaseModal, NewCaseConfig } from './components/workspace/NewLiveCaseModal'
+import { useCaseState } from './contexts/CaseStateContext'
 
 export type ViewMode =
   | 'landing'
@@ -27,6 +29,7 @@ export type ViewMode =
   | 'system-health'
 
 export const App: React.FC = () => {
+  const { runtimeMode, startNewLiveCase, caseState } = useCaseState()
   const [currentTab, setCurrentTab] = useState<NavTabId>('live-calls')
   const [selectedCaseId, setSelectedCaseId] = useState<string>('RLY-1042')
   const [viewMode, setViewMode] = useState<ViewMode>('live-workstation')
@@ -34,6 +37,7 @@ export const App: React.FC = () => {
   const [isHumanTakeover, setIsHumanTakeover] = useState<boolean>(false)
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false)
   const [isDemoModalOpen, setIsDemoModalOpen] = useState<boolean>(false)
+  const [isNewCaseModalOpen, setIsNewCaseModalOpen] = useState<boolean>(false)
   const [isMicModalOpen, setIsMicModalOpen] = useState<boolean>(false)
   const [activeScenarioId, setActiveScenarioId] = useState<string>('delivery-refund')
 
@@ -77,6 +81,14 @@ export const App: React.FC = () => {
   const handleOpenLiveConsole = () => {
     setViewMode('live-workstation')
     setCurrentTab('live-calls')
+  }
+
+  const handleStartNewCase = (config: NewCaseConfig) => {
+    startNewLiveCase(config)
+    setIsHumanTakeover(false)
+    setViewMode('live-workstation')
+    setCurrentTab('live-calls')
+    setIsNewCaseModalOpen(false)
   }
 
   const handleToggleTakeover = () => {
@@ -125,8 +137,8 @@ export const App: React.FC = () => {
       {/* 1. DESKTOP HEADER (Hidden on mobile) */}
       <div className="hidden md:block">
         <AppHeader
-          caseId={`CASE-${selectedCaseId.replace('RLY-', '')}`}
-          caseTitle="Delivery dispute"
+          caseId={`CASE-${caseState.id.replace('RLY-', '')}`}
+          caseTitle={caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Customer Support'}
           isConnected={true}
           isHumanTakeover={isHumanTakeover}
           isDrawerOpen={isDrawerOpen}
@@ -134,6 +146,7 @@ export const App: React.FC = () => {
           onOpenSearch={() => setIsSearchOpen(true)}
           onSelectCase={handleOpenCaseDetail}
           onOpenDemoMode={() => setIsDemoModalOpen(true)}
+          onOpenNewCase={() => setIsNewCaseModalOpen(true)}
         />
       </div>
 
@@ -157,7 +170,7 @@ export const App: React.FC = () => {
         {viewMode === 'landing' && (
           <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-canvas">
             <LandingPortalView
-              onStartLiveSession={handleOpenLiveConsole}
+              onStartLiveSession={() => setIsNewCaseModalOpen(true)}
               onViewDemoCase={() => handleOpenCaseDetail('RLY-1042')}
               onExploreCasesQueue={() => {
                 setCurrentTab('cases')
@@ -172,6 +185,7 @@ export const App: React.FC = () => {
             <CasesListView
               selectedCaseId={selectedCaseId}
               onSelectCase={handleOpenCaseDetail}
+              onOpenNewCase={() => setIsNewCaseModalOpen(true)}
             />
           </main>
         )}
@@ -257,6 +271,14 @@ export const App: React.FC = () => {
           setIsHumanTakeover(true)
         }}
         onDismiss={() => setIsMicModalOpen(false)}
+      />
+
+      {/* NEW LIVE CASE MODAL */}
+      <NewLiveCaseModal
+        isOpen={isNewCaseModalOpen}
+        onClose={() => setIsNewCaseModalOpen(false)}
+        onStartCase={handleStartNewCase}
+        defaultMode={runtimeMode}
       />
     </div>
   )

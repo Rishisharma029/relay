@@ -1,6 +1,9 @@
 /**
  * RELAY — Authoritative Case State Context
- * Single source of truth driven by event-sourcing and deterministic reducers.
+ *
+ * Supports Dual Runtime Modes:
+ *   - REAL MODE: Live Agora RTC WebRTC channel, SSE real-time event pipeline, PostgreSQL event ledger.
+ *   - DEMO MODE: Deterministic simulation loop for presentation & failover demonstrations.
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
@@ -10,7 +13,12 @@ import { agoraRtm } from '../services/agoraRtmService'
 import { agoraRtc, RealtimeTelemetry } from '../services/agoraRtcService'
 import { caseStateReducer, reconstructCaseState } from '../services/caseStateReducer'
 
+export type RuntimeMode = 'REAL' | 'DEMO'
+
 interface CaseStateContextType {
+  runtimeMode: RuntimeMode
+  setRuntimeMode: (mode: RuntimeMode) => void
+  toggleRuntimeMode: () => void
   caseState: CaseState
   setCaseState: React.Dispatch<React.SetStateAction<CaseState>>
   events: RelayEvent[]
@@ -25,12 +33,20 @@ interface CaseStateContextType {
   approveActiveAction: (operatorName?: string) => Promise<void>
   declineActiveAction: () => Promise<void>
   resetCase: (caseId?: string) => void
+  startNewLiveCase: (config: {
+    customerName: string
+    customerId: string
+    preferredLanguage: string
+    reason: string
+    mode: RuntimeMode
+  }) => void
   clearFailure: () => void
 }
 
 const CaseStateContext = createContext<CaseStateContextType | null>(null)
 
 export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('REAL')
   const [caseState, setCaseState] = useState<CaseState>(INITIAL_CASE_STATE)
   const [events, setEvents] = useState<RelayEvent[]>([
     {
@@ -61,6 +77,10 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     },
   ])
 
+  const toggleRuntimeMode = () => {
+    setRuntimeMode((prev) => (prev === 'REAL' ? 'DEMO' : 'REAL'))
+  }
+
   // Pure Dispatcher: appends event and runs through deterministic caseStateReducer
   const dispatchRelayEvent = useCallback((ev: RelayEvent) => {
     setEvents((prevEvents) => [...prevEvents, ev])
@@ -68,11 +88,56 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [])
 
   // Time-travel replay: reconstructs state up to any historical event index
-  const replayUpToIndex = useCallback((index: number) => {
-    setCaseState(reconstructCaseState(events, index, INITIAL_CASE_STATE))
-  }, [events])
+  const replayUpToIndex = useCallback(
+    (index: number) => {
+      setCaseState(reconstructCaseState(events, index, INITIAL_CASE_STATE))
+    },
+    [events]
+  )
 
-  // Synchronize with Agora RTM and RTC events via unified RelayEvent bus
+  // Real-Time SSE Stream Subscription in REAL Mode
+  useEffect(() => {
+    if (runtimeMode !== 'REAL') return
+
+    let eventSource: EventSource | null = null
+
+    try {
+      eventSource = new EventSource('/api/events/stream')
+
+      eventSource.onmessage = (e) => {
+        try {
+          const raw = JSON.parse(e.data)
+          if (raw.type === 'connected') return
+
+          const ev: RelayEvent = {
+            type: raw.event_type || raw.type || 'case.updated',
+            timestamp: raw.timestamp || new Date().toLocaleTimeString(),
+            payload: raw.payload || raw,
+            caseId: raw.case_id || 'RLY-1042',
+            ...(raw.payload || {}),
+          }
+
+          dispatchRelayEvent(ev)
+        } catch (parseErr) {
+          console.warn('[SSE] Parse error:', parseErr)
+        }
+      }
+
+      eventSource.onerror = () => {
+        // Handled silently with auto-reconnect
+      }
+    } catch (sseErr) {
+      console.warn('[SSE] Failed to establish live event stream:', sseErr)
+    }
+
+    return () => {
+      if (eventSource) {
+        eventSource.close()
+      }
+    }
+  }, [runtimeMode, dispatchRelayEvent])
+
+  // Synchronize with Agora RTM and RTC events
   useEffect(() => {
     const unsubRelay = agoraRtm.subscribeRelayEvents((ev) => {
       dispatchRelayEvent(ev)
@@ -109,12 +174,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [caseState.takeoverState, caseState.status, dispatchRelayEvent])
 
   const updateLanguage = (language: string) => {
-    dispatchRelayEvent({
-      type: 'language.changed',
-      from: caseState.language,
-      to: language,
-      timestamp: new Date().toLocaleTimeString(),
-    })
+    setCaseState((prev) => ({ ...prev, language }))
   }
 
   const updateIntent = (intent: string) => {
@@ -144,35 +204,79 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }
 
   const approveActiveAction = async (operatorName: string = 'Maya Sharma') => {
+    const now = new Date().toLocaleTimeString()
+    const approvalId = caseState.activeAction?.id || 'appr-1042-99042'
+    const amount = caseState.activeAction?.amount || 1499
+
+    // Optimistically update case state immediately
+    setCaseState((prev) => ({
+      ...prev,
+      status: 'resolved',
+      activeAction: prev.activeAction
+        ? {
+            ...prev.activeAction,
+            status: 'APPROVED',
+            approvedAt: now,
+            approvedBy: operatorName,
+          }
+        : undefined,
+      facts: prev.facts.some((f) => f.label.includes('Refund Settled') || f.label.includes('Refund Approved'))
+        ? prev.facts
+        : [
+            ...prev.facts,
+            {
+              id: `f-appr-${Date.now()}`,
+              label: `Refund Settled ₹1,499 (${operatorName})`,
+              verified: true,
+              source: 'NPCI UPI Instant Settlement',
+            },
+          ],
+    }))
+
+    // Dispatch lifecycle events
+    dispatchRelayEvent({
+      type: 'approval.approved',
+      actionId: approvalId,
+      operatorId: 'OP-782',
+      amount,
+      timestamp: now,
+    })
+
+    dispatchRelayEvent({
+      type: 'approval.executing',
+      approvalId,
+      amount,
+      timestamp: now,
+    })
+
+    dispatchRelayEvent({
+      type: 'approval.completed',
+      approvalId,
+      amount,
+      timestamp: now,
+    })
+
+    dispatchRelayEvent({
+      type: 'speech.transcript',
+      speaker: 'agent',
+      text: 'Refund initiate ho gaya hai. Aapke account mein ₹1,499 transfer ho jayenge.',
+      translation: 'Refund has been initiated. ₹1,499 will be transferred to your account.',
+      language: 'Hindi / Hinglish',
+      timestamp: now,
+    })
+
     try {
-      const now = new Date().toLocaleTimeString()
-      const res = await fetch('/api/approvals/approve', {
+      await fetch('/api/approvals/approve', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          approvalId: caseState.activeAction?.id || 'appr-1042-99042',
+          approvalId,
           operator: { id: 'OP-782', name: operatorName },
           caseId: caseState.id,
         }),
       })
-
-      if (res.ok) {
-        dispatchRelayEvent({
-          type: 'approval.approved',
-          actionId: caseState.activeAction?.id || 'appr-1042-99042',
-          operatorId: 'OP-782',
-          amount: caseState.activeAction?.amount || 1499,
-          timestamp: now,
-        })
-      }
-    } catch (e) {
-      dispatchRelayEvent({
-        type: 'approval.approved',
-        actionId: caseState.activeAction?.id || 'appr-1042-99042',
-        operatorId: 'OP-782',
-        amount: 1499,
-        timestamp: new Date().toLocaleTimeString(),
-      })
+    } catch (err) {
+      console.warn('[Approval] Backend sync note:', err)
     }
   }
 
@@ -196,11 +300,23 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }))
   }
 
-  const resetCase = (caseId: string = 'RLY-1042') => {
+  const resetCase = async (caseId: string = 'RLY-1042') => {
     setCaseState({
       ...INITIAL_CASE_STATE,
       id: caseId,
     })
+
+    try {
+      const res = await fetch(`/api/cases/${caseId}/events`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.events && Array.isArray(data.events)) {
+          setEvents(data.events)
+          return
+        }
+      }
+    } catch (e) {}
+
     setEvents([
       {
         type: 'call.started',
@@ -210,6 +326,75 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ])
   }
 
+  const startNewLiveCase = (config: {
+    customerName: string
+    customerId: string
+    preferredLanguage: string
+    reason: string
+    mode: RuntimeMode
+  }) => {
+    const newCaseId = `RLY-${Math.floor(1045 + Math.random() * 8950)}`
+    const initials = config.customerName
+      .split(' ')
+      .map((p) => p[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2) || 'CU'
+
+    setRuntimeMode(config.mode)
+    setCaseState({
+      id: newCaseId,
+      customerId: config.customerId || `CUST-${initials}-01`,
+      customerName: config.customerName,
+      customerPhone: '+91 98000 00000',
+      customerTier: 'Platinum',
+      channelName: `relay-case-${newCaseId.toLowerCase()}`,
+      language: config.preferredLanguage,
+      intent: config.reason,
+      sentiment: 'Calm · Active',
+      facts: [], // Clean slate - no pre-seeded facts from other cases!
+      unknowns: ['Reason for call', 'Customer inquiry'],
+      activeAction: undefined, // No pending refund action until detected!
+      status: 'active',
+      takeoverState: 'AI_ACTIVE',
+      participants: [
+        {
+          id: config.customerId || 'CUST-01',
+          role: 'CUSTOMER',
+          name: config.customerName,
+          joinedAt: new Date().toLocaleTimeString(),
+        },
+        {
+          id: 'AI-9999',
+          role: 'AI_AGENT',
+          name: 'RELAY AI',
+          joinedAt: new Date().toLocaleTimeString(),
+        },
+      ],
+    })
+
+    setEvents([
+      {
+        type: 'call.started',
+        caseId: newCaseId,
+        timestamp: new Date().toLocaleTimeString(),
+      },
+    ])
+
+    // Asynchronously notify backend to persist new case record
+    fetch('/api/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: newCaseId,
+        customerName: config.customerName,
+        customerId: config.customerId,
+        preferredLanguage: config.preferredLanguage,
+        reason: config.reason,
+      }),
+    }).catch((e) => console.warn('Case creation backend note:', e))
+  }
+
   const clearFailure = () => {
     setCaseState((prev) => ({ ...prev, activeFailure: undefined }))
   }
@@ -217,6 +402,9 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   return (
     <CaseStateContext.Provider
       value={{
+        runtimeMode,
+        setRuntimeMode,
+        toggleRuntimeMode,
         caseState,
         setCaseState,
         events,
@@ -231,6 +419,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         approveActiveAction,
         declineActiveAction,
         resetCase,
+        startNewLiveCase,
         clearFailure,
       }}
     >

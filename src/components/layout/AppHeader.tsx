@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Layers, Search, ArrowUpRight, ShieldAlert, Wrench, FolderPlus } from 'lucide-react'
+import { useCaseState } from '../../contexts/CaseStateContext'
 
 export interface NotificationItem {
   id: string
@@ -21,6 +22,7 @@ interface AppHeaderProps {
   onOpenSearch?: () => void
   onSelectCase?: (caseId: string) => void
   onOpenDemoMode?: () => void
+  onOpenNewCase?: () => void
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
@@ -33,7 +35,9 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   onOpenSearch,
   onSelectCase,
   onOpenDemoMode,
+  onOpenNewCase,
 }) => {
+  const { runtimeMode, toggleRuntimeMode } = useCaseState()
   const [timeString, setTimeString] = useState<string>('')
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
   const [notifications, setNotifications] = useState<NotificationItem[]>([
@@ -170,17 +174,44 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
         </div>
       </div>
 
-      {/* Center/Right: Section 35 Global Search, Section 41 Demo Mode, Section 37 Notifications & Controls */}
+      {/* Center/Right: New Case, Runtime Mode Switcher, Global Search, Notifications */}
       <div className="flex items-center gap-2.5">
+        {/* NEW LIVE CASE TRIGGER */}
+        {onOpenNewCase && (
+          <button
+            type="button"
+            onClick={onOpenNewCase}
+            className="flex items-center gap-1 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] border border-accent-border rounded-[3px] px-2 py-0.5 text-xs font-mono font-bold tracking-wider uppercase transition-colors cursor-pointer shadow-hairline"
+            title="Start New Live Case"
+          >
+            <span>+ NEW CASE</span>
+          </button>
+        )}
+
+        {/* RUNTIME MODE SWITCHER: REAL vs DEMO */}
+        <button
+          type="button"
+          onClick={toggleRuntimeMode}
+          className={`font-mono text-[10px] uppercase px-2 py-0.5 rounded-[3px] font-bold tracking-wider border transition-colors cursor-pointer flex items-center gap-1.5 ${
+            runtimeMode === 'REAL'
+              ? 'bg-ops-liveBg text-ops-live border-ops-liveBorder'
+              : 'bg-accent-subtle text-accent border-accent-border'
+          }`}
+          title="Click to toggle between REAL CALL (Live WebRTC/SSE) and DEMO MODE (Deterministic State Simulator)"
+        >
+          <span className={`w-1.5 h-1.5 rounded-full ${runtimeMode === 'REAL' ? 'bg-ops-live animate-pulse' : 'bg-accent'}`} />
+          <span>{runtimeMode === 'REAL' ? 'REAL CALL · LIVE' : 'DEMO MODE · DETERMINISTIC'}</span>
+        </button>
+
         {/* SECTION 41: DEMO SCENARIOS TRIGGER */}
         {onOpenDemoMode && (
           <button
             type="button"
             onClick={onOpenDemoMode}
-            className="flex items-center gap-1 bg-accent-subtle hover:bg-accent-subtle/80 border border-accent-border rounded-[3px] px-2 py-0.5 text-xs text-accent font-mono font-bold transition-colors cursor-pointer"
+            className="flex items-center gap-1 bg-canvas-subtle hover:bg-canvas-muted border border-border-subtle rounded-[3px] px-2 py-0.5 text-xs text-ink-secondary hover:text-ink-primary font-mono font-bold transition-colors cursor-pointer"
             title="Demo Mode Scenarios Control (Alt+D)"
           >
-            <span>⚡ DEMO</span>
+            <span>⚡ SCENARIOS</span>
           </button>
         )}
 

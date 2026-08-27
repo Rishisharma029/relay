@@ -1,112 +1,113 @@
 /**
  * RELAY — 5-Point Server-Side Real Policy Engine
- * Evaluates strict business & security criteria before proposals and at execution time.
+ *
+ * Sits directly between AI intent and financial/action execution.
+ *
+ * Flow:
+ *   AI → issueRefund
+ *          ↓
+ *    evaluateRefundPolicy()
+ *          ↓
+ *  ┌─────────────────────────────┐
+ *  │ order exists?               │
+ *  │ customer verified?          │
+ *  │ refund eligible?            │
+ *  │ amount allowed?             │
+ *  │ duplicate refund?           │
+ *  └──────────────┬──────────────┘
+ *                 ↓
+ *        APPROVAL REQUIRED
  */
 
 import { lookupCustomer } from './tools/customer.js'
 import { lookupOrder } from './tools/orders.js'
+import { checkIdempotency, buildIdempotencyKey } from './idempotencyStore.js'
 
 // In-memory ledger of executed refunds to detect duplicates
 export const settledRefundsLedger = new Set()
 
 /**
  * 5-Point Policy Gate Evaluation
- * 1. customer verified?
- * 2. order exists?
- * 3. amount within limit?
- * 4. policy eligible?
- * 5. duplicate action?
+ * 1. order exists?
+ * 2. customer verified?
+ * 3. refund eligible?
+ * 4. amount allowed?
+ * 5. duplicate refund?
  */
 export async function evaluatePolicyGates(params = {}) {
   const evaluatedAt = new Date().toISOString()
-  const customerId = params.customerId || 'CUST-AARAV-01'
-  const orderId = params.orderId || '84921'
+  const customerId = params.customerId || 'CUS-1042'
+  const orderId = String(params.orderId || '84921').replace(/^#/, '').trim()
   const amount = Number(params.amount) || 1499
+  const caseId = params.caseId || 'RLY-1042'
 
-  // Gate 1: Customer Verified?
-  const customerRes = await lookupCustomer(customerId)
-  const isCustomerValid = customerRes.found && customerRes.customer
-  const customerTier = customerRes.customer?.tier || 'STANDARD'
-
-  // Gate 2: Order Exists?
+  // Gate 1: Order Exists?
   const orderRes = await lookupOrder(orderId)
-  const isOrderValid = orderRes.found && orderRes.order
-  const orderTotal = orderRes.order?.amountInr || 1499
+  const isOrderValid = Boolean(orderRes.success && orderRes.orderId)
+  const orderTotal = orderRes.amount || 1499
 
-  // Gate 3: Amount Within Limit?
-  // Limit cannot exceed original order total or policy tier maximum
+  // Gate 2: Customer Verified?
+  const customerRes = await lookupCustomer(customerId)
+  const isCustomerValid = Boolean(customerRes.success && customerRes.verified)
+  const customerTier = customerRes.tier || 'PLATINUM'
+
+  // Gate 3: Refund Eligible?
+  // Delivery delay past SLA (+3d) or confirmed carrier exception code
+  const isDelayed = (orderRes.delayDays || 0) > 0
+  const hasException = orderRes.status === 'delivery_exception' || orderRes.status === 'DELIVERY_EXCEPTION'
+  const isRefundEligible = isDelayed || hasException
+
+  // Gate 4: Amount Allowed?
+  // Limit cannot exceed captured order amount or tier limit
   const maxTierCap = customerTier === 'PLATINUM' ? 25000 : 10000
-  const isAmountValid = amount > 0 && amount <= orderTotal && amount <= maxTierCap
+  const isAmountAllowed = amount > 0 && amount <= orderTotal && amount <= maxTierCap
 
-  // Gate 4: Policy Eligible?
-  // Delay must be verified past delivery SLA or carrier exception confirmed
-  const isDelayed = (orderRes.order?.delayDays || 0) > 0
-  const hasException = orderRes.order?.status === 'DELIVERY_EXCEPTION'
-  const isPolicyEligible = isDelayed || hasException
-
-  // Gate 5: No Duplicate Action?
-  const isDuplicate = settledRefundsLedger.has(orderId)
-  const isNoDuplicate = !isDuplicate
+  // Gate 5: No Duplicate Refund?
+  const idemKey = buildIdempotencyKey('refund', caseId, orderId)
+  const idemCheck = checkIdempotency(idemKey)
+  const isDuplicate = settledRefundsLedger.has(orderId) || idemCheck.isDuplicate
+  const isNoDuplicateRefund = !isDuplicate
 
   // Aggregate Evaluation
   const allPassed =
-    isCustomerValid &&
     isOrderValid &&
-    isAmountValid &&
-    isPolicyEligible &&
-    isNoDuplicate
+    isCustomerValid &&
+    isRefundEligible &&
+    isAmountAllowed &&
+    isNoDuplicateRefund
 
-  const requiresHumanApproval = amount >= 1000 || customerTier !== 'PLATINUM'
-  const riskTier = amount > 2500 ? 'HIGH' : amount >= 1000 ? 'MEDIUM' : 'LOW'
+  // Risk Classification
+  const risk = amount > 2500 ? 'high' : amount >= 1000 ? 'medium' : 'low'
+  const requiresApproval = amount >= 1000 || customerTier !== 'PLATINUM'
 
   const reasons = []
+  if (!isOrderValid) reasons.push(`Order #${orderId} does not exist in commerce gateway`)
   if (!isCustomerValid) reasons.push('Customer identity could not be verified')
-  if (!isOrderValid) reasons.push(`Order #${orderId} does not exist in gateway`)
-  if (!isAmountValid) reasons.push(`Requested amount ₹${amount} exceeds order cap ₹${orderTotal}`)
-  if (!isPolicyEligible) reasons.push('Logistics SLA has not been breached')
-  if (isDuplicate) reasons.push(`Duplicate action: A refund for Order #${orderId} was already settled`)
+  if (!isRefundEligible) reasons.push('Logistics SLA has not been breached (no exception code)')
+  if (!isAmountAllowed) reasons.push(`Requested amount ₹${amount} exceeds allowed cap ₹${orderTotal}`)
+  if (isDuplicate) reasons.push(`Duplicate refund blocked: Order #${orderId} already settled`)
 
   return {
-    passed: allPassed,
-    eligible: allPassed,
-    policyId: 'POL-DELIVERY-DELAY-01',
-    policyName: 'E-Commerce Logistics SLA Breach Resolution Policy',
-    riskTier,
-    requiresHumanApproval,
+    allowed: allPassed,
+    requiresApproval,
+    risk,
+    policyId: 'POL-REFUND-3.2',
+    section: 'Section 4.1',
     evaluatedAt,
     checks: {
-      customerVerified: {
-        passed: !!isCustomerValid,
-        detail: isCustomerValid ? `Customer ${customerRes.customer.name} verified` : 'Customer not found',
-        tier: customerTier,
-      },
-      orderExists: {
-        passed: !!isOrderValid,
-        detail: isOrderValid ? `Order #${orderId} confirmed (₹${orderTotal})` : 'Order not found',
-        orderAmount: orderTotal,
-      },
-      amountWithinLimit: {
-        passed: isAmountValid,
-        detail: `₹${amount} ≤ order cap ₹${orderTotal} (Tier limit ₹${maxTierCap})`,
-        maxLimit: orderTotal,
-      },
-      policyEligible: {
-        passed: isPolicyEligible,
-        detail: isDelayed ? `Delivery exception confirmed (${orderRes.order?.delayDays} days delayed past SLA)` : 'No delay verified',
-        delayDays: orderRes.order?.delayDays,
-      },
-      noDuplicateAction: {
-        passed: isNoDuplicate,
-        detail: isNoDuplicate ? '0 prior refunds settled for this order ID' : 'PREVIOUS REFUND DETECTED',
-        isDuplicate,
-      },
+      orderExists: isOrderValid,
+      customerVerified: isCustomerValid,
+      refundEligible: isRefundEligible,
+      amountAllowed: isAmountAllowed,
+      noDuplicateRefund: isNoDuplicateRefund,
     },
     reasons,
   }
 }
 
 export function registerSettledRefund(orderId) {
-  settledRefundsLedger.add(orderId)
+  const clean = String(orderId).replace(/^#/, '').trim()
+  settledRefundsLedger.add(clean)
 }
 
 export function clearSettledRefunds() {

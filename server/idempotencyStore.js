@@ -1,81 +1,88 @@
 /**
- * RELAY — Idempotency Store
- * Composite-key ledger for financial actions. Redis-shaped for easy swap.
- * Prevents duplicate executions of the same action.
+ * RELAY — Financial Idempotency Store
  *
- * Key format: refund:<caseId>:<orderId>
- * Example:    refund:RLY-1042:#84921
+ * Prevents duplicate executions of financial operations (e.g. ₹1,499 refunded twice).
+ *
+ * Canonical Key Format:
+ *   <action>:<caseId>:<orderId>
+ *   Example: refund:RLY-1042:84921
  */
 
-// In-memory store. Swap for `ioredis` in production.
+// In-memory store. In clustered production, this maps to Redis SETNX with TTL.
 const store = new Map()
 
-// TTL for idempotency keys: 24 hours
+// Default TTL: 24 hours
 const TTL_MS = 24 * 60 * 60 * 1000
 
 /**
- * Build a canonical idempotency key from parts.
- * Action type + case + order prevents cross-case collisions.
+ * Build a canonical idempotency key from action components.
  */
-export function buildIdempotencyKey(actionType, caseId, orderId) {
-  const normalized = {
-    action: actionType.toLowerCase().trim(),
-    case:   caseId.toUpperCase().trim(),
-    order:  String(orderId).replace(/^#/, '').trim(),
-  }
-  return `${normalized.action}:${normalized.case}:#${normalized.order}`
+export function buildIdempotencyKey(actionType = 'refund', caseId = 'RLY-1042', orderId = '84921') {
+  const normalizedAction = String(actionType).toLowerCase().trim()
+  const normalizedCase = String(caseId).toUpperCase().trim()
+  const normalizedOrder = String(orderId).replace(/^#/, '').trim()
+  return `${normalizedAction}:${normalizedCase}:${normalizedOrder}`
 }
 
 /**
  * Check if an idempotency key already exists.
- * Returns the original result if it does.
+ * Returns existing result if already completed.
  */
 export function checkIdempotency(key) {
-  const entry = store.get(key)
+  const normalizedKey = key.replace(/#/, '')
+  const entry = store.get(normalizedKey) || store.get(key)
+
   if (!entry) {
     return { isDuplicate: false, existingResult: null }
   }
 
   // Respect TTL
   if (Date.now() > entry.expiresAt) {
+    store.delete(normalizedKey)
     store.delete(key)
     return { isDuplicate: false, existingResult: null }
   }
 
   return {
-    isDuplicate:    true,
+    isDuplicate: true,
     existingResult: entry.result,
-    registeredAt:   entry.registeredAt,
-    expiresAt:      new Date(entry.expiresAt).toISOString(),
+    registeredAt: entry.registeredAt,
+    expiresAt: new Date(entry.expiresAt).toISOString(),
   }
 }
 
 /**
- * Register a completed action so future requests with the same key
+ * Register a completed financial action so future requests with the same key
  * return the existing result without re-executing.
  */
 export function registerIdempotencyKey(key, result) {
-  store.set(key, {
-    key,
+  const normalizedKey = key.replace(/#/, '')
+  const record = {
+    key: normalizedKey,
     result,
     registeredAt: new Date().toISOString(),
-    expiresAt:    Date.now() + TTL_MS,
-  })
+    expiresAt: Date.now() + TTL_MS,
+  }
+  store.set(normalizedKey, record)
+  store.set(key, record)
 }
 
 /**
- * List all active idempotency keys (for audit/debug endpoint).
+ * List all active idempotency keys (for audit/debug).
  */
 export function listIdempotencyKeys() {
   const now = Date.now()
   const active = []
   for (const [key, entry] of store.entries()) {
     if (now <= entry.expiresAt) {
-      active.push({
-        key,
-        registeredAt: entry.registeredAt,
-        expiresAt:    new Date(entry.expiresAt).toISOString(),
-      })
+      if (!key.includes('#')) {
+        active.push({
+          key,
+          registeredAt: entry.registeredAt,
+          expiresAt: new Date(entry.expiresAt).toISOString(),
+          status: entry.result?.status || 'SETTLED',
+        })
+      }
     } else {
       store.delete(key)
     }
@@ -84,8 +91,10 @@ export function listIdempotencyKeys() {
 }
 
 /**
- * Purge a specific key (for test/reset purposes only).
+ * Purge a specific key (for test reset).
  */
 export function purgeIdempotencyKey(key) {
+  const normalizedKey = key.replace(/#/, '')
+  store.delete(normalizedKey)
   return store.delete(key)
 }

@@ -123,10 +123,10 @@ export const CaseDetailView: React.FC<CaseDetailViewProps> = ({
             variant="primary"
             size="xs"
             onClick={onOpenLiveCall}
-            className="gap-1 font-mono text-[10px] h-7"
+            className="gap-1.5 font-mono text-[10px] font-bold uppercase tracking-wider h-7 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] cursor-pointer"
           >
             <PhoneCall className="w-3 h-3" />
-            <span>LIVE CONSOLE</span>
+            <span>[ RESUME LIVE CALL ]</span>
           </Button>
         </div>
       </div>

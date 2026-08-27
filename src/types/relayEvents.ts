@@ -61,14 +61,53 @@ export type RelayEvent =
       amount?: number
       riskTier?: string
       timestamp: string
+      payload?: any
     }
   | {
       id?: string
       type: 'approval.approved'
-      actionId: string
-      operatorId: string
+      actionId?: string
+      operatorId?: string
       amount?: number
       timestamp: string
+      payload?: any
+    }
+  | {
+      id?: string
+      type: 'approval.executing'
+      approvalId?: string
+      actionType?: string
+      orderId?: string
+      amount?: number
+      timestamp: string
+      payload?: any
+    }
+  | {
+      id?: string
+      type: 'approval.completed'
+      approvalId?: string
+      transactionId?: string
+      amount?: number
+      rrn?: string
+      timestamp: string
+      payload?: any
+    }
+  | {
+      id?: string
+      type: 'approval.rejected' | 'approval.declined'
+      approvalId?: string
+      operatorId?: string
+      reason?: string
+      timestamp: string
+      payload?: any
+    }
+  | {
+      id?: string
+      type: 'approval.failed'
+      approvalId?: string
+      error?: string
+      timestamp: string
+      payload?: any
     }
   | {
       id?: string
@@ -76,6 +115,13 @@ export type RelayEvent =
       operatorId: string
       state?: TakeoverStateMachineState
       reason?: string
+      timestamp: string
+    }
+  | {
+      id?: string
+      type: 'case.updated'
+      caseId?: string
+      payload?: any
       timestamp: string
     }
   | {

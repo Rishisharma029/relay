@@ -104,7 +104,17 @@ export function caseStateReducer(prevState: CaseState, event: RelayEvent): CaseS
           amount: event.amount || 1499,
           currency: 'INR',
           riskTier: (event.riskTier as any) || 'MEDIUM',
-          policyId: 'POL-DELIVERY-DELAY-01',
+          policyId: 'POL-REFUND-3.2',
+          policyUsed: {
+            policyId: 'POL-REFUND-3.2',
+            name: 'Refund Policy v3.2',
+            section: 'Section 4.1',
+          },
+          evidence: [
+            'order_delayed',
+            'customer_requested_refund',
+            'policy_eligible',
+          ],
           justification: [
             'Delivery exception confirmed with logistics carrier',
             'Customer explicitly requested instant refund',
@@ -117,13 +127,13 @@ export function caseStateReducer(prevState: CaseState, event: RelayEvent): CaseS
     case 'approval.approved':
       return {
         ...prevState,
-        status: 'resolved',
+        status: 'awaiting_approval',
         activeAction: prevState.activeAction
           ? {
               ...prevState.activeAction,
               status: 'APPROVED',
               approvedAt: event.timestamp,
-              approvedBy: event.operatorId,
+              approvedBy: (event as any).operatorId || 'OP-782',
             }
           : undefined,
         facts: prevState.facts.some((f) => f.label.includes('Refund Approved'))
@@ -132,11 +142,79 @@ export function caseStateReducer(prevState: CaseState, event: RelayEvent): CaseS
               ...prevState.facts,
               {
                 id: `f-appr-${Date.now()}`,
-                label: `Refund Approved (${event.operatorId || 'OP-782'})`,
+                label: `Refund Approved (${(event as any).operatorId || 'OP-782'})`,
                 verified: true,
                 source: 'Authoritative Policy Ledger',
               },
             ],
+      }
+
+    case 'approval.executing':
+      return {
+        ...prevState,
+        status: 'executing_action',
+        activeAction: prevState.activeAction
+          ? {
+              ...prevState.activeAction,
+              status: 'APPROVED',
+            }
+          : undefined,
+      }
+
+    case 'case.updated':
+      return {
+        ...prevState,
+        assignedOperator: (event as any).payload?.assignedName || prevState.assignedOperator,
+        assignmentStatus: (event as any).payload?.assignmentStatus || prevState.assignmentStatus,
+      }
+
+    case 'approval.completed':
+      return {
+        ...prevState,
+        status: 'resolved',
+        activeAction: prevState.activeAction
+          ? {
+              ...prevState.activeAction,
+              status: 'APPROVED',
+              approvedAt: event.timestamp,
+            }
+          : undefined,
+        facts: prevState.facts.some((f) => f.label.includes('Refund Settled'))
+          ? prevState.facts
+          : [
+              ...prevState.facts,
+              {
+                id: `f-settled-${Date.now()}`,
+                label: `Refund Settled (₹${(event as any).amount || 1499} UPI Instant)`,
+                verified: true,
+                source: 'NPCI UPI Gateway',
+              },
+            ],
+      }
+
+    case 'approval.rejected':
+    case 'approval.declined':
+      return {
+        ...prevState,
+        status: 'active',
+        activeAction: prevState.activeAction
+          ? {
+              ...prevState.activeAction,
+              status: 'DECLINED',
+            }
+          : undefined,
+      }
+
+    case 'approval.failed':
+      return {
+        ...prevState,
+        status: 'active',
+        activeAction: prevState.activeAction
+          ? {
+              ...prevState.activeAction,
+              status: 'DECLINED',
+            }
+          : undefined,
       }
 
     case 'human.takeover': {

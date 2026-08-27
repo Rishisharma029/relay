@@ -21,12 +21,13 @@ class SessionLanguageStore {
 export const sessionLanguageStore = new SessionLanguageStore()
 
 /**
- * Detects if utterance contains an explicit or implicit language switch directive.
+ * Detects if utterance is English vs Hindi/Hinglish or contains an explicit language switch directive.
  */
 export function detectLanguageShift(utterance = '', currentLanguage = 'hi-IN') {
   const text = utterance.toLowerCase().trim()
+  if (!text) return { shifted: false, current: currentLanguage }
 
-  // Switch to English triggers
+  // 1. Explicit Switch Triggers
   const englishTriggers = [
     'continue in english',
     'speak in english',
@@ -37,7 +38,6 @@ export function detectLanguageShift(utterance = '', currentLanguage = 'hi-IN') {
     'in english',
   ]
 
-  // Switch to Hindi triggers
   const hindiTriggers = [
     'hindi mein',
     'hindi me',
@@ -50,25 +50,118 @@ export function detectLanguageShift(utterance = '', currentLanguage = 'hi-IN') {
   const wantsEnglish = englishTriggers.some((t) => text.includes(t))
   const wantsHindi = hindiTriggers.some((t) => text.includes(t))
 
-  if (wantsEnglish && currentLanguage !== 'en-IN') {
+  if (wantsEnglish) {
     return {
       shifted: true,
       from: currentLanguage,
       to: 'en-IN',
       targetName: 'English (India)',
-      confidence: 0.98,
+      confidence: 0.99,
       reason: 'Customer explicitly requested English communication',
     }
   }
 
-  if (wantsHindi && currentLanguage !== 'hi-IN') {
+  if (wantsHindi) {
     return {
       shifted: true,
       from: currentLanguage,
       to: 'hi-IN',
       targetName: 'Hindi (Devanagari / Hinglish)',
-      confidence: 0.98,
+      confidence: 0.99,
       reason: 'Customer explicitly requested Hindi communication',
+    }
+  }
+
+  // 2. Natural Language Content Analysis
+  const hindiKeywords = [
+    'mera',
+    'meri',
+    'mere',
+    'karo',
+    'karein',
+    'karti',
+    'karta',
+    'chahiye',
+    'aaya',
+    'aayi',
+    'aaye',
+    'nahi',
+    'naahi',
+    'paisa',
+    'paise',
+    'madad',
+    'namaste',
+    'hai',
+    'hain',
+    'hoon',
+    'kya',
+    'kyun',
+    'kab',
+    'kahan',
+    'batao',
+    'bhejo',
+    'shukriya',
+    'dhanyawad',
+    'theek',
+    'accha',
+    'suno',
+    'pehle',
+    'wapas',
+  ]
+
+  const englishKeywords = [
+    'where',
+    'what',
+    'when',
+    'why',
+    'how',
+    'order',
+    'refund',
+    'delivery',
+    'delayed',
+    'status',
+    'cancel',
+    'tracking',
+    'package',
+    'parcel',
+    'arrive',
+    'arrived',
+    'please',
+    'help',
+    'need',
+    'want',
+    'money',
+    'account',
+    'thank',
+    'good',
+    'hello',
+  ]
+
+  const words = text.split(/\s+/)
+  const hindiMatchCount = words.filter((w) => hindiKeywords.some((k) => w.includes(k))).length
+  const englishMatchCount = words.filter((w) => englishKeywords.some((k) => w.includes(k))).length
+
+  // If user spoke strictly English phrases (e.g. "where is my order", "I want a refund", "please check status")
+  if (englishMatchCount > 0 && hindiMatchCount === 0 && currentLanguage !== 'en-IN') {
+    return {
+      shifted: true,
+      from: currentLanguage,
+      to: 'en-IN',
+      targetName: 'English (India)',
+      confidence: 0.95,
+      reason: 'Natural English utterance detected',
+    }
+  }
+
+  // If user spoke Hindi (e.g. "Mera order nahi aaya", "Mujhe refund chahiye")
+  if (hindiMatchCount > 0 && currentLanguage !== 'hi-IN') {
+    return {
+      shifted: true,
+      from: currentLanguage,
+      to: 'hi-IN',
+      targetName: 'Hindi (Devanagari / Hinglish)',
+      confidence: 0.95,
+      reason: 'Natural Hindi / Hinglish utterance detected',
     }
   }
 

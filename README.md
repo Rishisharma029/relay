@@ -47,47 +47,70 @@ Full Event Replay  ── Every action reconstructible at any timestamp
 
 ---
 
-## Architecture
-
-### End-to-End Flow
+## Final RELAY Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           BROWSER (React + TypeScript)                       │
-│                                                                               │
-│  LiveConversationPane  ──  Waveform  ──  Transcript  ──  FailureStateBanner  │
-│  CaseIntelligencePane  ──  PolicyGate  ──  ApprovalButton  ──  FactsPanel    │
-│  ReplayableEvidenceTimeline  ──  Scrubber  ──  StateReconstruction           │
-└─────────────┬────────────────────────────┬────────────────────────────────────┘
-              │  WebRTC (Agora RTC SDK)     │  RTM (Relay Event Bus)
-              ▼                             ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           AGORA CLOUD (v2.8)                                 │
-│                                                                               │
-│  RTC Channel ── 48kHz Opus Audio ── Hardware VAD ── Token Lifecycle Mgmt    │
-│  RTM Channel ── RelayEvent Discriminated Union ── Real-time State Sync      │
-└─────────────┬────────────────────────────────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           VITE DEV SERVER / NODE                              │
-│                                                                               │
-│  /api/agora/token      ── Server-side RTC token generation                   │
-│  /api/agent/start      ── Conversational AI join with data retention         │
-│  /api/agent/turn       ── Autonomous LLM → Tool → LLM pipeline               │
-│  /api/tools/execute    ── Backend tool engine (timeout + retry)              │
-│  /api/approvals        ── 6-gate security model + idempotency                │
-│  /api/idempotency/keys ── Audit ledger inspection                            │
-│  /api/db/stats         ── Database health                                    │
-└─────────────┬────────────────────────────────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           POSTGRESQL                                          │
-│                                                                               │
-│  customers  cases  conversations  transcript_messages  case_facts            │
-│  actions    approvals  tool_executions  events                               │
-└─────────────────────────────────────────────────────────────────────────────┘
+                         ┌────────────────────┐
+                         │      FRONTEND      │
+                         │ React / Vite / TS  │
+                         └─────────┬──────────┘
+                                   │
+                         WebSocket / RTM
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────┐
+│                         RELAY CORE                            │
+│                                                               │
+│ Case State       Event Bus       Policy Engine                │
+│ Memory            Tool Router    Approval Engine              │
+│                                                               │
+└───────┬──────────────┬──────────────┬──────────────┬─────────┘
+        │              │              │              │
+        ▼              ▼              ▼              ▼
+     AGORA           LLM            TOOLS        DATABASE
+      RTC             │              │              │
+       │              │              │              │
+       ▼              ▼              ▼              ▼
+    Voice          Reasoning     Actions       Persistence
+       │
+       ▼
+  Customer / Human
+```
+
+---
+
+## Complete User Journey
+
+```
+CUSTOMER SPEAKS
+       ↓
+AGORA (WebRTC 48kHz Opus Duplex)
+       ↓
+ASR (Streaming Multilingual Deepgram Nova-2)
+       ↓
+CONVERSATION ENGINE (Language Shift + Intent Detection)
+       ↓
+CASE STATE (3-Tier Memory Context: Turn, Case, Customer)
+       ↓
+REASON (LLM Function Intent & Schema Evaluation)
+       ↓
+TOOL CALL (Deterministic Tool Router with Retry & Timeout)
+       ↓
+POLICY (Knowledge Layer: Refund Policy v3.2 Section 4.1 Evaluation)
+       ↓
+HUMAN APPROVAL (Single-Click Governance Gate with Policy Re-check)
+       ↓
+ACTION (NPCI Instant UPI / BlueDart Logistics RPC Execution)
+       ↓
+EVENT (Append-Only relay_events Monotonic Sequence)
+       ↓
+CASE STATE UPDATE (Pure Reducer State Transition)
+       ↓
+TTS (Streaming Neural Voice Synthesis)
+       ↓
+AGORA (Low Latency Duplex Voice Track)
+       ↓
+CUSTOMER HEARS RESULT
 ```
 
 ### Agent Turn Pipeline

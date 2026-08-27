@@ -21,6 +21,12 @@ export interface ActionRequest {
   currency?: string
   riskTier: 'LOW' | 'MEDIUM' | 'HIGH'
   policyId: string
+  policyUsed?: {
+    policyId: string
+    name: string
+    section: string
+  }
+  evidence?: string[]
   justification: string[]
   status: 'PENDING' | 'APPROVED' | 'DECLINED'
   approvedAt?: string
@@ -39,6 +45,9 @@ export interface Participant {
 export interface CaseState {
   id: string
   customerId: string
+  customerName?: string
+  customerPhone?: string
+  customerTier?: string
   channelName: string
 
   language: string
@@ -57,18 +66,29 @@ export interface CaseState {
   /** Set when a recoverable failure is in progress. Cleared when resolved. */
   activeFailure?: ActiveFailure
 
+  assignedOperator?: string
+  assignmentStatus?: 'UNASSIGNED' | 'ASSIGNED' | 'ESCALATED'
+
   status:
     | 'connecting'
     | 'active'
     | 'awaiting_approval'
-    | 'human_takeover'
+    | 'executing_action'
     | 'resolved'
+    | 'human_takeover'
+    | 'human_active'
+    | 'ai_resumed'
+    | 'degraded'
+    | 'recovering'
     | 'failed'
 }
 
 export const INITIAL_CASE_STATE: CaseState = {
   id: 'RLY-1042',
   customerId: 'CUST-AARAV-01',
+  customerName: 'Aarav Sharma',
+  customerPhone: '+91 98201 44102',
+  customerTier: 'Platinum',
   channelName: 'relay-case-1042',
 
   language: 'Hindi',

@@ -66,7 +66,7 @@ export const CALL_STATES_META: Record<CallState, CallStateMeta> = {
     badgeVariant: 'accent',
     topBarBadge: '● CALLER ACTIVE',
     participantStatus: { customer: 'SPEAKING', agent: 'LISTENING' },
-    description: 'Aarav is speaking Hindi • Deepgram Hindi-v2 streaming partial tokens',
+    description: 'Caller speaking • Deepgram Multilingual ASR streaming partial tokens',
   },
   RELAY_SPEAKING: {
     id: 'RELAY_SPEAKING',

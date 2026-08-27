@@ -292,6 +292,11 @@ class AgoraRtcService {
     this.emitTelemetry()
   }
 
+  public toggleMute(): boolean {
+    this.setMute(!this.isMuted)
+    return this.isMuted
+  }
+
   /**
    * Pause / Resume AI Voice Agent Playback
    */

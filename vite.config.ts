@@ -2,11 +2,13 @@ import { defineConfig, Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { generateRtcToken } from './server/tokenServer.js'
 import { startConversationalAgent, stopConversationalAgent } from './server/agentService.js'
-import { executeTool } from './server/tools/index.js'
+import { executeTool, TOOL_REGISTRY, getApprovedToolDefinitions } from './server/tools/index.js'
 import { createApprovalRequest, processApproval, processDecline } from './server/approvalService.js'
 import { db } from './server/db/database.js'
 import { processAgentTurn } from './server/agentOrchestrator.js'
 import { listIdempotencyKeys } from './server/idempotencyStore.js'
+import { OperatorService } from './server/operatorService.js'
+import { recoverCaseState } from './server/stateEngine.js'
 
 function agoraApiPlugin(): Plugin {
   return {
@@ -149,7 +151,9 @@ function agoraApiPlugin(): Plugin {
               const data = JSON.parse(body || '{}')
               const utterance = data.utterance || data.text || 'Mera order 5 din se nahi aaya.'
               const caseId = data.caseId || 'RLY-1042'
-              const result = await processAgentTurn(utterance, caseId)
+              const customerName = data.customerName || null
+              const agentGender = data.agentGender || 'female'
+              const result = await processAgentTurn(utterance, caseId, customerName, agentGender)
               res.statusCode = 200
               res.end(JSON.stringify(result))
             } catch (err: any) {
@@ -195,6 +199,41 @@ function agoraApiPlugin(): Plugin {
               res.end(JSON.stringify({ error: err?.message || 'Tool execution failed' }))
             }
           })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 5.1 CONTROLLED TOOL REGISTRY INSPECTOR: /api/tools/registry
+      server.middlewares.use('/api/tools/registry', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'GET') {
+          const tools = Object.keys(TOOL_REGISTRY).map((k) => ({
+            name: TOOL_REGISTRY[k].name,
+            description: TOOL_REGISTRY[k].description,
+            riskLevel: TOOL_REGISTRY[k].riskLevel,
+            requiresApproval: TOOL_REGISTRY[k].requiresApproval,
+            parameters: TOOL_REGISTRY[k].parameters,
+          }))
+
+          res.statusCode = 200
+          res.end(JSON.stringify({
+            totalApprovedTools: tools.length,
+            tools,
+            functionDefinitions: getApprovedToolDefinitions(),
+          }))
           return
         }
 
@@ -311,6 +350,135 @@ function agoraApiPlugin(): Plugin {
           })
           return
         }
+      })
+
+      // 9.1 REAL-TIME EVENT STREAM (SSE): /api/events/stream
+      server.middlewares.use('/api/events/stream', (req, res) => {
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('Cache-Control', 'no-cache, no-transform')
+        res.setHeader('Connection', 'keep-alive')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+
+        res.write('data: {"type":"connected","message":"RELAY Realtime SSE Stream Active"}\n\n')
+
+        const unsubscribe = db.subscribe((eventRecord: any) => {
+          try {
+            res.write(`data: ${JSON.stringify(eventRecord)}\n\n`)
+          } catch (e) {}
+        })
+
+        req.on('close', () => {
+          unsubscribe()
+        })
+      })
+
+      // 10. CASE REPLAY & EVENT STREAM API: /api/cases/
+      server.middlewares.use('/api/cases', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        const url = req.url || ''
+        const match = url.match(/\/([A-Za-z0-9_-]+)/)
+        const caseId = match ? match[1] : 'RLY-1042'
+        const isEvents = url.includes('/events')
+        const isAssign = url.includes('/assign')
+        const isRecover = url.includes('/recover')
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => (body += chunk))
+          req.on('end', async () => {
+            try {
+              const data = body ? JSON.parse(body) : {}
+              if (isAssign) {
+                const targetOperatorId = data.operatorId || data.targetOperatorId || 'OP-782'
+                const assigningOperatorId = data.assigningOperatorId || 'OP-782'
+                const assignment = OperatorService.assignCase(caseId, targetOperatorId, assigningOperatorId)
+                res.statusCode = 200
+                res.end(JSON.stringify({ success: true, assignment }))
+                return
+              }
+
+              if (isRecover) {
+                const recoveryResult = await recoverCaseState(caseId)
+                res.statusCode = 200
+                res.end(JSON.stringify({ success: true, recovery: recoveryResult }))
+                return
+              }
+
+              res.statusCode = 400
+              res.end(JSON.stringify({ error: 'Unknown action' }))
+            } catch (err: any) {
+              res.statusCode = err?.httpStatus || 400
+              res.end(JSON.stringify({ error: err?.message || 'Operation failed' }))
+            }
+          })
+          return
+        }
+
+        if (req.method === 'GET') {
+          if (isEvents) {
+            const events = db.getRelayEvents(caseId)
+            res.statusCode = 200
+            res.end(JSON.stringify({
+              caseId,
+              eventCount: events.length,
+              events,
+              replayReady: true,
+            }))
+            return
+          } else {
+            const caseData = db.getCase(caseId)
+            const customer = db.getCustomer('CUST-AARAV-01')
+            const events = db.getRelayEvents(caseId)
+            const assignment = OperatorService.getCaseAssignment(caseId)
+            res.statusCode = 200
+            res.end(JSON.stringify({
+              case: caseData,
+              customer,
+              assignment,
+              events,
+            }))
+            return
+          }
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 11. MULTI-OPERATOR ROSTER & PERMISSIONS: /api/operators
+      server.middlewares.use('/api/operators', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'GET') {
+          res.statusCode = 200
+          res.end(JSON.stringify({
+            totalOperators: OperatorService.getOperators().length,
+            operators: OperatorService.getOperators(),
+          }))
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
       })
     }
   }

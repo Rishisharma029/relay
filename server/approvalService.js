@@ -1,62 +1,80 @@
 /**
  * RELAY — Server-Side Human Approval Service
- * Security boundaries: expiry gate, operator authorization, case & action ownership,
- * idempotency check, 5-point policy re-evaluation, then execute.
+ *
+ * Full Lifecycle State Machine:
+ *   PENDING ──► APPROVED ──► EXECUTING ──► COMPLETED
+ *      │                                       │
+ *      └──► REJECTED                           └──► FAILED
+ *
+ * Every transition generates an authoritative RelayEvent.
+ * Enforces operator authorization, case ownership, 5-point double policy evaluation, and idempotency.
  */
 
 import { evaluatePolicyGates, registerSettledRefund } from './policyEngine.js'
 import { issueRefund } from './tools/refunds.js'
-import {
-  APPROVAL_EXPIRY_MS,
-  isAuthorizedOperator,
-} from './config.js'
+import { APPROVAL_EXPIRY_MS, isAuthorizedOperator } from './config.js'
 import {
   buildIdempotencyKey,
   checkIdempotency,
   registerIdempotencyKey,
 } from './idempotencyStore.js'
-import {
-  FAILURE_STATES,
-  buildFailureEvent,
-} from './failureEngine.js'
+import { FAILURE_STATES, buildFailureEvent } from './failureEngine.js'
 import { db } from './db/database.js'
 
 export const approvalStore = new Map()
 
 // Seed initial pending approval for Case RLY-1042
 approvalStore.set('appr-1042-99042', {
-  id:                  'appr-1042-99042',
-  caseId:              'RLY-1042',
-  customerId:          'CUST-AARAV-01',
-  orderId:             '84921',
-  actionType:          'REFUND',
-  amount:              1499,
-  currency:            'INR',
-  riskTier:            'MEDIUM',
-  status:              'PENDING',
-  policyId:            'POL-DELIVERY-DELAY-01',
-  requiredRole:        'OPERATOR',
+  id: 'appr-1042-99042',
+  caseId: 'RLY-1042',
+  customerId: 'CUS-1042',
+  orderId: '84921',
+  actionType: 'REFUND',
+  amount: 1499,
+  currency: 'INR',
+  riskTier: 'medium',
+  status: 'PENDING',
+  policyId: 'POL-REFUND-3.2',
+  section: 'Section 4.1',
+  requiredRole: 'OPERATOR',
   justification: [
-    'Delivery exception confirmed with logistics carrier',
+    'Delivery exception confirmed with logistics carrier (BlueDart Air)',
     'Customer explicitly requested instant refund',
     'Delayed past SLA (+3 days)',
   ],
-  createdAt: '2026-08-27T21:34:08Z',
+  createdAt: new Date().toISOString(),
 })
 
-// ─────────────────────────────────────────────
-// Step 1: AI Proposes Action → 5-Point Policy Gate → Approval Created
-// ─────────────────────────────────────────────
+/**
+ * Emit an authoritative RelayEvent for state transitions
+ */
+function emitApprovalEvent(caseId, type, payload) {
+  const event = {
+    type,
+    payload,
+    timestamp: new Date().toLocaleTimeString(),
+  }
+  try {
+    db.appendRelayEvent(caseId, event)
+  } catch (e) {
+    console.warn('[ApprovalService] db.appendRelayEvent fallback:', e?.message)
+  }
+  return event
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. PENDING: AI Proposes Action → Policy Gate 1 → Approval Created
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function createApprovalRequest(data = {}) {
-  const customerId = data.customerId || 'CUST-AARAV-01'
-  const orderId    = data.orderId    || '84921'
-  const amount     = Number(data.amount) || 1499
-  const caseId     = data.caseId    || 'RLY-1042'
+  const customerId = data.customerId || 'CUS-1042'
+  const orderId = String(data.orderId || '84921').replace(/^#/, '').trim()
+  const amount = Number(data.amount) || 1499
+  const caseId = data.caseId || 'RLY-1042'
 
-  // First 5-point policy evaluation
-  const policyCheck = await evaluatePolicyGates({ customerId, orderId, amount })
-  if (!policyCheck.passed) {
+  // Gate 1 Policy Evaluation before proposal
+  const policyCheck = await evaluatePolicyGates({ customerId, orderId, amount, caseId })
+  if (!policyCheck.allowed) {
     throw new Error(`Policy violation: ${policyCheck.reasons.join(', ')}`)
   }
 
@@ -67,35 +85,44 @@ export async function createApprovalRequest(data = {}) {
     caseId,
     customerId,
     orderId,
-    actionType:            'REFUND',
+    actionType: 'REFUND',
     amount,
-    currency:              'INR',
-    riskTier:              policyCheck.riskTier,
-    requiresHumanApproval: policyCheck.requiresHumanApproval,
-    status:                'PENDING',
-    policyId:              policyCheck.policyId,
-    policyName:            policyCheck.policyName,
-    policyChecks:          policyCheck.checks,
-    createdAt:             new Date().toISOString(),
+    currency: 'INR',
+    riskTier: policyCheck.risk,
+    requiresHumanApproval: policyCheck.requiresApproval,
+    status: 'PENDING',
+    policyId: policyCheck.policyId,
+    policySection: policyCheck.section,
+    policyChecks: policyCheck.checks,
+    createdAt: new Date().toISOString(),
   }
 
   approvalStore.set(id, approvalRecord)
 
+  // Emit 'approval.created' (PENDING)
+  emitApprovalEvent(caseId, 'approval.created', {
+    approvalId: id,
+    actionType: 'REFUND',
+    amount,
+    currency: 'INR',
+    riskTier: policyCheck.risk,
+    status: 'PENDING',
+  })
+
   return {
-    type:             'approval.created',
-    approval:         approvalRecord,
+    type: 'approval.created',
+    approval: approvalRecord,
     policyEvaluation: policyCheck,
   }
 }
 
-// ─────────────────────────────────────────────
-// Step 2: Operator Approves
-// Security gates run in strict order — all must pass before execution.
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. APPROVED ──► EXECUTING ──► COMPLETED
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function processApproval(
   approvalId = 'appr-1042-99042',
-  operator   = { id: 'OP-782', name: 'Maya Sharma' },
+  operator = { id: 'OP-782', name: 'Maya Sharma' },
   requestedCaseId = null
 ) {
   const record = approvalStore.get(approvalId) || approvalStore.get('appr-1042-99042')
@@ -104,7 +131,9 @@ export async function processApproval(
     throw new Error(`Approval request ${approvalId} not found`)
   }
 
-  // ── GATE 1: Operator Authorization ──────────────────────────────────────
+  const caseId = record.caseId
+
+  // ── GATE 1: Operator Authorization ─────────────────────────────────────────
   if (!isAuthorizedOperator(operator.id)) {
     throw Object.assign(
       new Error(`Operator ${operator.id} is not authorized to approve actions`),
@@ -112,8 +141,7 @@ export async function processApproval(
     )
   }
 
-  // ── GATE 2: Case Ownership ───────────────────────────────────────────────
-  // Prevent cross-case approval injection (e.g. operator for case A approving case B action)
+  // ── GATE 2: Case Ownership Check ───────────────────────────────────────────
   if (requestedCaseId && record.caseId !== requestedCaseId) {
     throw Object.assign(
       new Error(`Action ${approvalId} belongs to case ${record.caseId}, not ${requestedCaseId}`),
@@ -121,132 +149,178 @@ export async function processApproval(
     )
   }
 
-  // ── GATE 3: Action Ownership / Status Check ──────────────────────────────
-  if (record.status === 'APPROVED') {
-    // Already approved — idempotent return, not an error
+  // ── GATE 3: Status & Expiry Check ──────────────────────────────────────────
+  if (record.status === 'COMPLETED' || record.status === 'APPROVED') {
     return {
-      type:     'action.already_completed',
+      type: 'action.already_completed',
       approval: record,
-      message:  'This approval was already processed. Returning existing result.',
+      message: 'This approval was already processed. Returning existing result.',
     }
   }
 
-  if (record.status === 'DECLINED') {
+  if (record.status === 'REJECTED' || record.status === 'DECLINED') {
     throw Object.assign(
-      new Error(`Approval ${approvalId} was already declined and cannot be re-approved`),
-      { code: 'ALREADY_DECLINED', httpStatus: 409 }
+      new Error(`Approval ${approvalId} was already rejected and cannot be re-approved`),
+      { code: 'ALREADY_REJECTED', httpStatus: 409 }
     )
   }
 
-  // ── GATE 4: Approval Expiry ──────────────────────────────────────────────
   const ageMs = Date.now() - new Date(record.createdAt).getTime()
   if (ageMs > APPROVAL_EXPIRY_MS) {
-    const expiredAt = record.createdAt
     record.status = 'EXPIRED'
     approvalStore.set(approvalId, record)
 
     const failureEvent = buildFailureEvent(FAILURE_STATES.APPROVAL_EXPIRED, {
       approvalId,
-      expiredAt,
+      expiredAt: record.createdAt,
+    })
+
+    emitApprovalEvent(caseId, 'approval.failed', {
+      approvalId,
+      reason: 'APPROVAL_EXPIRED',
+      failureEvent,
     })
 
     throw Object.assign(
-      new Error(`Approval expired after ${Math.round(ageMs / 60000)} minutes. Create a new request.`),
+      new Error(`Approval expired after ${Math.round(ageMs / 60000)} minutes.`),
       { code: 'APPROVAL_EXPIRED', httpStatus: 410, failureEvent }
     )
   }
 
-  // ── GATE 5: Idempotency Check ────────────────────────────────────────────
-  // If this exact financial action was already executed, return the original result.
+  // ── GATE 4: Idempotency Verification ───────────────────────────────────────
   const idemKey = buildIdempotencyKey(record.actionType, record.caseId, record.orderId)
   const idemCheck = checkIdempotency(idemKey)
 
   if (idemCheck.isDuplicate) {
-    const failureEvent = buildFailureEvent(FAILURE_STATES.APPROVAL_DUPLICATE, {
-      approvalId,
-      existingResult: idemCheck.existingResult,
-    })
-
     return {
-      type:           'action.duplicate_prevented',
-      approvalId:     record.id,
-      caseId:         record.caseId,
+      type: 'action.duplicate_prevented',
+      approvalId: record.id,
+      caseId: record.caseId,
       idempotencyKey: idemKey,
       existingResult: idemCheck.existingResult,
-      registeredAt:   idemCheck.registeredAt,
-      failureEvent,
-      message:        `Duplicate prevented. Original execution: ${idemCheck.registeredAt}. No charge applied.`,
+      registeredAt: idemCheck.registeredAt,
+      message: `Duplicate refund prevented for ${idemKey}. Original transaction preserved.`,
     }
   }
 
-  // ── GATE 6: Policy Re-Evaluation (mandatory double-check) ───────────────
-  // Never assume the action is still valid from when it was proposed.
+  // ── GATE 5: Mandatory Policy Re-Evaluation (Gate 2 Check) ─────────────────
   const policyRecheck = await evaluatePolicyGates({
     customerId: record.customerId,
-    orderId:    record.orderId,
-    amount:     record.amount,
+    orderId: record.orderId,
+    amount: record.amount,
+    caseId: record.caseId,
   })
 
-  if (!policyRecheck.passed) {
+  if (!policyRecheck.allowed) {
+    record.status = 'REJECTED'
+    approvalStore.set(approvalId, record)
+
+    emitApprovalEvent(caseId, 'approval.rejected', {
+      approvalId,
+      reason: `Policy re-check failed: ${policyRecheck.reasons.join(', ')}`,
+      operatorId: operator.id,
+    })
+
     throw new Error(`Policy Re-Check Violation: ${policyRecheck.reasons.join(', ')}`)
   }
 
-  // ── EXECUTE: Financial Transaction ──────────────────────────────────────
-  const refundResult = await issueRefund(record.orderId, record.amount)
-
-  // Register in settled refunds ledger (duplicate protection layer 2)
-  registerSettledRefund(record.orderId)
-
-  // Register idempotency key so any repeat call returns this result
-  const completedResult = {
-    type:           'action.completed',
-    approvalId:     record.id,
-    caseId:         record.caseId,
-    actionType:     record.actionType,
-    amount:         record.amount,
-    currency:       record.currency,
-    approvedBy:     operator,
-    transaction:    refundResult,
-    completedAt:    new Date().toISOString(),
-    recheckPassed:  true,
-    policyId:       record.policyId,
-    idempotencyKey: idemKey,
-  }
-  registerIdempotencyKey(idemKey, completedResult)
-
-  // Commit updated record
-  record.status      = 'APPROVED'
-  record.approvedBy  = operator
-  record.approvedAt  = completedResult.completedAt
-  record.transaction = refundResult
-  record.finalPolicyCheck = policyRecheck
+  // ── TRANSITION 1: APPROVED ────────────────────────────────────────────────
+  record.status = 'APPROVED'
+  record.approvedBy = operator
+  record.approvedAt = new Date().toISOString()
   approvalStore.set(approvalId, record)
 
-  try {
-    db.appendRelayEvent(record.caseId, {
-      type: 'approval.approved',
-      payload: {
-        approvalId: record.id,
-        operatorId: operator.id,
-        amount: record.amount,
-        policyId: record.policyId,
-        idempotencyKey: idemKey,
-      },
-      timestamp: new Date().toLocaleTimeString(),
-    })
-  } catch (e) {}
+  emitApprovalEvent(caseId, 'approval.approved', {
+    approvalId: record.id,
+    operatorId: operator.id,
+    amount: record.amount,
+    policyId: record.policyId,
+    idempotencyKey: idemKey,
+  })
 
-  return completedResult
+  // ── TRANSITION 2: EXECUTING ───────────────────────────────────────────────
+  record.status = 'EXECUTING'
+  approvalStore.set(approvalId, record)
+
+  emitApprovalEvent(caseId, 'approval.executing', {
+    approvalId: record.id,
+    actionType: record.actionType,
+    orderId: record.orderId,
+    amount: record.amount,
+  })
+
+  try {
+    // ── EXECUTE TRANSACTION ─────────────────────────────────────────────────
+    const refundResult = await issueRefund(record.orderId, record.amount)
+
+    // Register in settled refunds ledger
+    registerSettledRefund(record.orderId)
+
+    // ── TRANSITION 3: COMPLETED ─────────────────────────────────────────────
+    const completedResult = {
+      type: 'action.completed',
+      approvalId: record.id,
+      caseId: record.caseId,
+      actionType: record.actionType,
+      amount: record.amount,
+      currency: record.currency,
+      approvedBy: operator,
+      transaction: refundResult,
+      completedAt: new Date().toISOString(),
+      policyId: record.policyId,
+      idempotencyKey: idemKey,
+      status: 'COMPLETED',
+    }
+
+    record.status = 'COMPLETED'
+    record.transaction = refundResult
+    record.completedAt = completedResult.completedAt
+    approvalStore.set(approvalId, record)
+
+    // Register in Idempotency Store
+    registerIdempotencyKey(idemKey, completedResult)
+
+    emitApprovalEvent(caseId, 'approval.completed', {
+      approvalId: record.id,
+      transactionId: refundResult.transactionId,
+      amount: record.amount,
+      rrn: refundResult.rrn,
+      status: 'COMPLETED',
+    })
+
+    // AI confirms execution to customer
+    emitApprovalEvent(caseId, 'speech.transcript', {
+      speaker: 'agent',
+      text: 'Refund initiate ho gaya hai. Aapke account mein ₹1,499 transfer ho jayenge.',
+      translation: 'Refund has been initiated. ₹1,499 will be transferred to your account.',
+      language: 'Hindi / Hinglish',
+    })
+
+    return completedResult
+  } catch (execErr) {
+    // ── TRANSITION: FAILED ──────────────────────────────────────────────────
+    record.status = 'FAILED'
+    record.failureReason = execErr?.message || 'Execution error'
+    approvalStore.set(approvalId, record)
+
+    emitApprovalEvent(caseId, 'approval.failed', {
+      approvalId: record.id,
+      error: execErr?.message || 'Execution failed',
+      status: 'FAILED',
+    })
+
+    throw execErr
+  }
 }
 
-// ─────────────────────────────────────────────
-// Decline
-// ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. REJECTED: Operator Declines Request
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function processDecline(
   approvalId = 'appr-1042-99042',
-  operator   = { id: 'OP-782', name: 'Maya Sharma' },
-  reason     = 'Declined by operator review'
+  operator = { id: 'OP-782', name: 'Maya Sharma' },
+  reason = 'Declined by operator review'
 ) {
   const record = approvalStore.get(approvalId) || approvalStore.get('appr-1042-99042')
 
@@ -254,7 +328,6 @@ export async function processDecline(
     throw new Error(`Approval request ${approvalId} not found`)
   }
 
-  // Authorization check on decline too
   if (!isAuthorizedOperator(operator.id)) {
     throw Object.assign(
       new Error(`Operator ${operator.id} is not authorized`),
@@ -262,19 +335,27 @@ export async function processDecline(
     )
   }
 
-  record.status      = 'DECLINED'
-  record.declinedBy  = operator
-  record.declinedAt  = new Date().toISOString()
+  record.status = 'REJECTED'
+  record.declinedBy = operator
+  record.declinedAt = new Date().toISOString()
   record.declineReason = reason
   approvalStore.set(approvalId, record)
 
-  return {
-    type:       'approval.declined',
+  emitApprovalEvent(record.caseId, 'approval.rejected', {
     approvalId: record.id,
-    caseId:     record.caseId,
+    declinedBy: operator,
+    reason,
+    status: 'REJECTED',
+  })
+
+  return {
+    type: 'approval.rejected',
+    approvalId: record.id,
+    caseId: record.caseId,
     declinedBy: operator,
     reason,
     declinedAt: record.declinedAt,
+    status: 'REJECTED',
   }
 }
 
