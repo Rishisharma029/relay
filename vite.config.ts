@@ -1,0 +1,285 @@
+import { defineConfig, Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
+import { generateRtcToken } from './server/tokenServer.js'
+import { startConversationalAgent, stopConversationalAgent } from './server/agentService.js'
+import { executeTool } from './server/tools/index.js'
+import { createApprovalRequest, processApproval, processDecline } from './server/approvalService.js'
+import { db } from './server/db/database.js'
+import { processAgentTurn } from './server/agentOrchestrator.js'
+import { listIdempotencyKeys } from './server/idempotencyStore.js'
+
+function agoraApiPlugin(): Plugin {
+  return {
+    name: 'agora-api-service',
+    configureServer(server) {
+      // 1. TOKEN ENDPOINT: /api/agora/token
+      server.middlewares.use('/api/agora/token', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const channel = data.channel || 'relay-case-1042'
+              const uid = data.uid || 1042
+              const tokenResponse = generateRtcToken(channel, uid)
+              res.statusCode = 200
+              res.end(JSON.stringify(tokenResponse))
+            } catch (err) {
+              res.statusCode = 400
+              res.end(JSON.stringify({ error: 'Invalid JSON payload' }))
+            }
+          })
+          return
+        }
+
+        const url = new URL(req.url || '', `http://${req.headers.host}`)
+        const channel = url.searchParams.get('channel') || 'relay-case-1042'
+        const uid = url.searchParams.get('uid') || 1042
+        const tokenResponse = generateRtcToken(channel, uid)
+        res.statusCode = 200
+        res.end(JSON.stringify(tokenResponse))
+      })
+
+      // 2. CONVERSATIONAL AI AGENT START: /api/agent/start
+      server.middlewares.use('/api/agent/start', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const result = await startConversationalAgent(data)
+              res.statusCode = 200
+              res.end(JSON.stringify(result))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Agent startup failed' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 3. CONVERSATIONAL AI AGENT STOP: /api/agent/stop
+      server.middlewares.use('/api/agent/stop', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const result = await stopConversationalAgent(data.taskId, data.channel)
+              res.statusCode = 200
+              res.end(JSON.stringify(result))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Agent stop failed' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 4. AUTONOMOUS AGENT TURN (INTENT -> TOOL CALLING -> TTS RESPONSE): /api/agent/turn
+      server.middlewares.use('/api/agent/turn', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const utterance = data.utterance || data.text || 'Mera order 5 din se nahi aaya.'
+              const caseId = data.caseId || 'RLY-1042'
+              const result = await processAgentTurn(utterance, caseId)
+              res.statusCode = 200
+              res.end(JSON.stringify(result))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Turn execution failed' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 5. BACKEND TOOL ENGINE DISPATCH: /api/tools/execute
+      server.middlewares.use('/api/tools/execute', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const toolName = data.tool || data.toolName || 'getOrderStatus'
+              const params = data.params || data.parameters || {}
+              const result = await executeTool(toolName, params)
+              res.statusCode = 200
+              res.end(JSON.stringify(result))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Tool execution failed' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 6. HUMAN APPROVAL SERVICE: /api/approvals/
+      server.middlewares.use('/api/approvals', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        const url = req.url || ''
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              if (url.includes('/approve') || data.action === 'APPROVE') {
+                const approvalId = data.approvalId || data.id || 'appr-1042-99042'
+                const operator = data.operator || { id: 'OP-782', name: 'Maya Sharma' }
+                const requestedCaseId = data.caseId || null
+                const result = await processApproval(approvalId, operator, requestedCaseId)
+                res.statusCode = 200
+                res.end(JSON.stringify(result))
+              } else if (url.includes('/decline') || data.action === 'DECLINE') {
+                const approvalId = data.approvalId || data.id || 'appr-1042-99042'
+                const operator = data.operator || { id: 'OP-782', name: 'Maya Sharma' }
+                const reason = data.reason || 'Operator declined exception'
+                const result = await processDecline(approvalId, operator, reason)
+                res.statusCode = 200
+                res.end(JSON.stringify(result))
+              } else {
+                const result = await createApprovalRequest(data)
+                res.statusCode = 200
+                res.end(JSON.stringify(result))
+              }
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Approval processing failed' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 7. DATABASE STATS & INSPECTION: /api/db/stats
+      server.middlewares.use('/api/db/stats', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.statusCode = 200
+        res.end(JSON.stringify(db.getStats()))
+      })
+
+      // 8. IDEMPOTENCY INSPECTION: /api/idempotency/keys
+      server.middlewares.use('/api/idempotency/keys', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.statusCode = 200
+        res.end(JSON.stringify({ keys: listIdempotencyKeys() }))
+      })
+    }
+  }
+}
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [react(), agoraApiPlugin()],
+  server: {
+    port: 3000,
+    open: false
+  }
+})
