@@ -179,15 +179,15 @@ export function caseStateReducer(prevState: CaseState, event: RelayEvent): CaseS
               approvedAt: event.timestamp,
             }
           : undefined,
-        facts: prevState.facts.some((f) => f.label.includes('Refund Settled'))
+        facts: prevState.facts.some((f) => f.label.includes('Refund Dispatched') || f.label.includes('Refund Settled'))
           ? prevState.facts
           : [
               ...prevState.facts,
               {
                 id: `f-settled-${Date.now()}`,
-                label: `Refund Settled (₹${(event as any).amount || 1499} UPI Instant)`,
+                label: `Refund Dispatched (₹${(event as any).amount || 1499} Sandbox)`,
                 verified: true,
-                source: 'NPCI UPI Gateway',
+                source: 'Demo Payment Sandbox (Simulated)',
               },
             ],
       }

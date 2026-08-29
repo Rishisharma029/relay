@@ -658,9 +658,14 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                   <span className="text-xs font-bold text-ink-primary uppercase tracking-wider">
                     ACTION REQUEST
                   </span>
-                  <span className="text-[9px] font-bold text-ops-warning bg-ops-warningBg px-1.5 py-0.5 rounded border border-[#FED7AA]">
-                    {caseState.activeAction?.riskTier || 'MEDIUM'} RISK
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9px] font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                      🧪 DEMO SANDBOX
+                    </span>
+                    <span className="text-[9px] font-bold text-ops-warning bg-ops-warningBg px-1.5 py-0.5 rounded border border-[#FED7AA]">
+                      {caseState.activeAction?.riskTier || 'MEDIUM'} RISK
+                    </span>
+                  </div>
                 </div>
 
                 <div>
@@ -771,17 +776,26 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
             {/* STATE 2: APPROVED / ACTION INITIATED (CLEAN RESTRAINT) */}
             {refundState === 'approved' && (
               <div className="space-y-2 py-1">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-ops-live">
-                  <Check className="w-4 h-4 stroke-[3]" />
-                  <span>✓ {caseState.activeAction?.title ? `${caseState.activeAction.title.toUpperCase()} COMMITTED` : 'ACTION INITIATED'}</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-ops-live">
+                    <Check className="w-4 h-4 stroke-[3]" />
+                    <span>✓ {caseState.activeAction?.title ? `${caseState.activeAction.title.toUpperCase()} DISPATCHED` : 'ACTION INITIATED'}</span>
+                  </div>
+                  <span className="text-[9px] font-bold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                    🧪 DEMO SANDBOX
+                  </span>
                 </div>
 
                 <div className="text-lg font-bold text-ink-primary tabular-nums">
-                  {caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : 'Settled & Verified'}
+                  {caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : 'Dispatched & Verified'}
+                </div>
+
+                <div className="p-1.5 bg-canvas-subtle border border-border-subtle rounded text-[10px] text-ink-muted font-mono leading-tight">
+                  Simulated financial transaction (Demo Payment Sandbox) · No real fiat moved.
                 </div>
 
                 <div className="text-[11px] text-ink-muted tabular-nums">
-                  {approvalTime || '21:34:11'}
+                  {approvalTime || '21:34:11'} · Ref: #sbx_rf_84921
                 </div>
 
                 <div className="pt-2 border-t border-border-subtle flex justify-end">

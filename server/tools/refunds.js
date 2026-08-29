@@ -34,24 +34,18 @@ export async function evaluateRefundPolicy(orderId = '84921', amount = 1499) {
   }
 }
 
-export async function issueRefund(orderId = '84921', amount = 1499) {
-  await new Promise((res) => setTimeout(res, 62))
+import { processRefundTransaction } from '../services/paymentGateway.js'
 
+export async function issueRefund(orderId = '84921', amount = 1499) {
   const cleanId = normalizeOrderId(orderId)
   const numericAmount = Number(amount) || 1499
-  const txnId = `RF-${cleanId}-${Math.floor(Math.random() * 90000 + 10000)}`
-  const rrn = `9481${Date.now().toString().slice(-8)}`
 
-  return {
-    success: true,
+  const result = await processRefundTransaction({
     orderId: cleanId,
-    status: 'refund_settled',
     amount: numericAmount,
     currency: 'INR',
-    paymentMethod: 'UPI_INSTANT',
-    transactionId: txnId,
-    rrn,
-    bankAck: 'NPCI_SETTLEMENT_CONFIRMED',
-    timestamp: new Date().toISOString(),
-  }
+    reason: 'Customer refund approved by operator under SLA Policy POL-REFUND-3.2'
+  })
+
+  return result
 }

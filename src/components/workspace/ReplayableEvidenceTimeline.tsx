@@ -182,16 +182,16 @@ export const EVIDENCE_TIMELINE_EVENTS: EvidenceTimelineEvent[] = [
     id: 'ev-11',
     time: '01:17',
     seconds: 77,
-    title: 'Refund confirmed',
-    detail: 'Bank ACK received. Reference #RF-92817 committed',
+    title: 'Refund Sandbox Dispatched',
+    detail: 'Demo Sandbox ACK received. Reference #sbx_rf_84921 committed (Simulated)',
     category: 'action',
     proof: {
       timestamp: '21:34:57',
       eventType: 'action.confirmed',
-      title: 'Bank Settlement Confirmed',
-      source: 'NPCI UPI Switch',
+      title: 'Demo Payment Sandbox Settlement',
+      source: 'RELAY Payment Sandbox (Simulated)',
       confidence: 1.0,
-      payload: { ack: 'SETTLED_OK', rrn: '948192841029' }
+      payload: { ack: 'SANDBOX_SETTLED_OK', mode: 'DEMO_SANDBOX', isSimulated: true, disclaimer: 'Simulated financial transaction — No real fiat moved', rrn: 'SBX948192841029' }
     }
   },
   {
