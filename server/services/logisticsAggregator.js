@@ -60,9 +60,12 @@ async function queryShiprocket(identifier) {
     return {
       success: true,
       source: 'LIVE_SHIPROCKET_API',
+      dataSource: 'LIVE_CARRIER_API',
+      isLive: true,
+      simulationBadge: 'LIVE DATA',
       orderId: track.order_id || identifier,
       trackingNumber: track.awb_code || identifier,
-      carrier: track.courier_name || 'Shiprocket Courier',
+      carrier: track.courier_name || 'Shiprocket Courier (Live API)',
       status: track.current_status || 'IN_TRANSIT',
       lastLocation: lastScan.location || track.current_status,
       expectedDelivery: track.edd || new Date(Date.now() + 86400000).toISOString(),
@@ -105,9 +108,12 @@ async function queryDelhivery(awb) {
     return {
       success: true,
       source: 'LIVE_DELHIVERY_API',
+      dataSource: 'LIVE_CARRIER_API',
+      isLive: true,
+      simulationBadge: 'LIVE DATA',
       orderId: pkg.ReferenceNo || awb,
       trackingNumber: pkg.AWB || awb,
-      carrier: 'Delhivery Surface / Express',
+      carrier: 'Delhivery Surface / Express (Live API)',
       status: pkg.Status?.Status || 'IN_TRANSIT',
       lastLocation: latestScan.ScannedLocation || pkg.Destination,
       expectedDelivery: pkg.ExpectedDeliveryDate || new Date(Date.now() + 86400000).toISOString(),
@@ -151,11 +157,14 @@ async function queryShopifyOrder(orderId) {
     return {
       success: true,
       source: 'LIVE_SHOPIFY_API',
+      dataSource: 'LIVE_CARRIER_API',
+      isLive: true,
+      simulationBadge: 'LIVE DATA',
       orderId: String(order.order_number || order.id),
       amount: parseFloat(order.total_price),
       currency: order.currency,
       status: fulfillment.shipment_status || order.financial_status,
-      carrier: fulfillment.tracking_company || 'Shopify Fulfillment Carrier',
+      carrier: fulfillment.tracking_company || 'Shopify Fulfillment Carrier (Live API)',
       trackingNumber: fulfillment.tracking_number || `SF-${order.id}`,
       lastLocation: fulfillment.tracking_company ? `${fulfillment.tracking_company} Transit Hub` : 'Fulfillment Center',
       delayDays: 0,
@@ -201,7 +210,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       placedAt: '2026-08-21T14:20:00Z',
       expectedDelivery: '2026-08-24T18:00:00Z',
       status: 'delivery_exception',
-      carrier: 'BlueDart Air Express',
+      carrier: 'BlueDart Air (Simulated)',
       trackingNumber: 'BD-948192841',
       lastLocation: 'Hub 04 (Outer Ring Logistics Terminal, Delhi NCR)',
       exceptionCode: 'COURIER_DELAY_TRANSIT',
@@ -211,7 +220,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       checkpoints: [
         { location: 'Warehouse Gurgaon', timestamp: '2026-08-21 16:30', activity: 'Package Picked Up' },
         { location: 'Delhi Sorting Facility', timestamp: '2026-08-22 03:15', activity: 'In Transit' },
-        { location: 'Hub 04 Outer Ring Terminal', timestamp: '2026-08-24 09:00', activity: 'Delayed in Transit - Weather / Route Block' }
+        { location: 'Hub 04 Outer Ring Terminal', timestamp: '2026-08-24 09:00', activity: 'Delayed in Transit - Route Block' }
       ]
     },
     '1042': {
@@ -221,7 +230,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       placedAt: '2026-08-21T14:20:00Z',
       expectedDelivery: '2026-08-24T18:00:00Z',
       status: 'delivery_exception',
-      carrier: 'BlueDart Air Express',
+      carrier: 'BlueDart Air (Simulated)',
       trackingNumber: 'BD-948192841',
       lastLocation: 'Hub 04 (Outer Ring Logistics Terminal)',
       exceptionCode: 'COURIER_DELAY_TRANSIT',
@@ -236,7 +245,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       placedAt: '2026-08-27T10:15:00Z',
       expectedDelivery: '2026-08-30T18:00:00Z',
       status: 'payment_dispute',
-      carrier: 'Delhivery Express',
+      carrier: 'Delhivery Express (Simulated)',
       trackingNumber: 'DL-884910291',
       lastLocation: 'Mumbai Distribution Hub',
       exceptionCode: 'DUPLICATE_PAYMENT_HOLD',
@@ -251,7 +260,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       placedAt: '2026-08-28T08:00:00Z',
       expectedDelivery: '2026-08-31T18:00:00Z',
       status: 'address_reroute_requested',
-      carrier: 'Shadowfax Quick Delivery',
+      carrier: 'Shadowfax Quick Delivery (Simulated)',
       trackingNumber: 'SF-99481029',
       lastLocation: 'Noida Sector 62 Sorting Center',
       exceptionCode: 'ADDRESS_UPDATE_IN_PROGRESS',
@@ -261,25 +270,31 @@ export async function trackOrderAcrossPlatforms(identifier) {
     }
   }
 
-  // If specific order in catalog, return it
+  // If specific order in catalog, return it with explicit SIMULATED_DATA tag
   if (catalog[normalizedDigits]) {
     const item = catalog[normalizedDigits]
     return {
       success: true,
-      source: 'MULTI_CARRIER_INTELLIGENCE',
+      dataSource: 'SIMULATED_DATA',
+      isLive: false,
+      simulationBadge: 'SIMULATED DATA',
+      disclaimer: 'Synthetic shipment record for hackathon demonstration. No live carrier API connection.',
       ...item
     }
   }
 
-  // Dynamic Generator for ANY custom order number entered by user
+  // Dynamic Generator for custom order numbers entered by user
   const seedNum = parseInt(normalizedDigits.slice(-3), 10) || 500
   const isDelayed = seedNum % 2 === 0
-  const carriers = ['BlueDart Air', 'Delhivery Express', 'DTDC Prime', 'Ekart Logistics', 'Xpressbees']
+  const carriers = ['BlueDart (Simulated)', 'Delhivery (Simulated)', 'DTDC (Simulated)', 'Ekart (Simulated)', 'Xpressbees (Simulated)']
   const selectedCarrier = carriers[seedNum % carriers.length]
 
   return {
     success: true,
-    source: 'MULTI_CARRIER_INTELLIGENCE',
+    dataSource: 'SIMULATED_DATA',
+    isLive: false,
+    simulationBadge: 'SIMULATED DATA',
+    disclaimer: 'Synthetic shipment record for hackathon demonstration. No live carrier API connection.',
     orderId: cleanId,
     amount: 1999,
     currency: 'INR',
@@ -287,16 +302,16 @@ export async function trackOrderAcrossPlatforms(identifier) {
     expectedDelivery: new Date(Date.now() - (isDelayed ? 86400000 : -86400000)).toISOString(),
     status: isDelayed ? 'delivery_exception' : 'out_for_delivery',
     carrier: selectedCarrier,
-    trackingNumber: `${selectedCarrier.slice(0, 2).toUpperCase()}-${normalizedDigits}`,
-    lastLocation: isDelayed ? 'Hub 07 Regional Sorting Hub' : 'Local Delivery Van (Out for Delivery)',
+    trackingNumber: `SIM-${normalizedDigits}`,
+    lastLocation: isDelayed ? 'Hub 07 Regional Sorting Hub (Simulated)' : 'Local Delivery Van (Simulated)',
     exceptionCode: isDelayed ? 'COURIER_DELAY_TRANSIT' : null,
     delayDays: isDelayed ? 2 : 0,
     isSlaBreached: isDelayed,
-    items: [{ sku: `SKU-PROD-${normalizedDigits}`, name: `Order #${cleanId} Merchandise Package`, qty: 1, price: 1999 }],
+    items: [{ sku: `SKU-SIM-${normalizedDigits}`, name: `Order #${cleanId} Merchandise (Demo)`, qty: 1, price: 1999 }],
     checkpoints: [
-      { location: 'Merchant Fulfillment Center', timestamp: '2 days ago', activity: 'Package Picked Up' },
-      { location: 'Central Hub', timestamp: 'Yesterday', activity: 'In Transit' },
-      { location: isDelayed ? 'Hub 07 Regional Sorting Hub' : 'Local Delivery Hub', timestamp: 'Today', activity: isDelayed ? 'Delayed in Transit' : 'Out for Delivery' }
+      { location: 'Fulfillment Center', timestamp: '2 days ago', activity: 'Package Picked Up (Simulated)' },
+      { location: 'Central Hub', timestamp: 'Yesterday', activity: 'In Transit (Simulated)' },
+      { location: isDelayed ? 'Regional Hub' : 'Local Delivery Hub', timestamp: 'Today', activity: isDelayed ? 'Delayed in Transit (Simulated)' : 'Out for Delivery (Simulated)' }
     ]
   }
 }

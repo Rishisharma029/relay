@@ -9,7 +9,11 @@ export async function lookupOrder(orderId = '84921') {
   const result = await trackOrderAcrossPlatforms(orderId)
   return {
     success: true,
-    source: result.source || 'MULTI_CARRIER_INTELLIGENCE',
+    source: result.source || 'LOGISTICS_AGGREGATOR',
+    dataSource: result.dataSource || 'SIMULATED_DATA',
+    isLive: result.isLive || false,
+    simulationBadge: result.simulationBadge || (result.isLive ? 'LIVE DATA' : 'SIMULATED DATA'),
+    disclaimer: result.disclaimer || null,
     orderId: result.orderId,
     status: result.status,
     amount: result.amount,
@@ -26,7 +30,11 @@ export async function getDeliveryStatus(orderId = '84921') {
   const result = await trackOrderAcrossPlatforms(orderId)
   return {
     success: true,
-    source: result.source || 'MULTI_CARRIER_INTELLIGENCE',
+    source: result.source || 'LOGISTICS_AGGREGATOR',
+    dataSource: result.dataSource || 'SIMULATED_DATA',
+    isLive: result.isLive || false,
+    simulationBadge: result.simulationBadge || (result.isLive ? 'LIVE DATA' : 'SIMULATED DATA'),
+    disclaimer: result.disclaimer || null,
     orderId: result.orderId,
     status: result.status,
     amount: result.amount,

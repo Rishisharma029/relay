@@ -552,6 +552,31 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
           </div>
         </div>
 
+        {/* LOGISTICS DATA INTEGRITY: LIVE vs SIMULATED CARRIER DATA */}
+        <div className="bg-canvas-pure border border-border-subtle rounded-[4px] p-3 space-y-2 shadow-hairline font-mono text-[10px]">
+          <div className="flex items-center justify-between pb-1 border-b border-border-subtle">
+            <span className="font-bold text-ink-muted uppercase tracking-wider">LOGISTICS DATA SOURCE</span>
+            <span className="font-bold px-1.5 py-0.5 rounded border flex items-center gap-1 bg-amber-500/10 text-amber-400 border-amber-500/20 text-[9px]">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span>SIMULATED DATA</span>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-1.5 pt-0.5 text-ink-secondary">
+            <div>
+              <span className="text-ink-muted block text-[9px] uppercase">Carrier</span>
+              <span className="font-bold text-ink-primary">BlueDart (Simulated)</span>
+            </div>
+            <div>
+              <span className="text-ink-muted block text-[9px] uppercase">AWB Tracking</span>
+              <span className="font-bold text-ink-primary">BD-948192841</span>
+            </div>
+            <div className="col-span-2 pt-1 border-t border-border-subtle/50 text-[9px] text-ink-muted">
+              ℹ️ Synthetic shipment record for evaluation. Live carrier API keys not configured.
+            </div>
+          </div>
+        </div>
+
         {/* KNOWN FACTS */}
         <div className="bg-canvas-pure border border-border-subtle rounded-[4px] p-3 space-y-2 shadow-hairline">
           <div className="flex items-center justify-between">
