@@ -245,6 +245,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   // Fast skip to fully loaded state
   const skipToScenarioEnd = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
     clearScenarioTimers()
+    agoraRtc.setSimulationMode(true)
     setTranscript(
       scenario.transcript.map((item) => ({
         id: item.id,
@@ -275,6 +276,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   const playScenarioTurnByTurn = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
     clearScenarioTimers()
     setIsPlayingScenario(true)
+    agoraRtc.setSimulationMode(true)
 
     // 1. Initial greeting
     const greetingItem: TranscriptItem = {

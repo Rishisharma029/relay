@@ -34,6 +34,8 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
   const [telemetry, setTelemetry] = useState<RealtimeTelemetry>({
     channel: 'relay-case-1042',
     connectionState: 'CONNECTED',
+    callMode: 'IDLE',
+    lastError: null,
     participantCount: 3,
     rttMs: 84,
     packetLossRate: 0.01,

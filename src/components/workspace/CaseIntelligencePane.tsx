@@ -153,10 +153,24 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
               <Radio className="w-3.5 h-3.5 text-accent" />
               <span>AGORA REALTIME</span>
             </span>
-            <span className="font-mono text-[9px] text-ops-live font-bold bg-ops-liveBg px-1.5 py-0.5 rounded border border-ops-liveBorder flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-ops-live" />
-              <span>LIVE</span>
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className={`font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border flex items-center gap-1 ${
+                agoraRtc.getCallMode() === 'REAL'
+                  ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                  : agoraRtc.getCallMode() === 'SIMULATION'
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                  : 'bg-canvas-subtle text-ink-muted border-border-subtle'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  agoraRtc.getCallMode() === 'REAL' ? 'bg-rose-500 animate-pulse' : agoraRtc.getCallMode() === 'SIMULATION' ? 'bg-amber-400' : 'bg-ink-muted'
+                }`} />
+                <span>{agoraRtc.getCallMode() === 'REAL' ? 'REAL CALL' : agoraRtc.getCallMode() === 'SIMULATION' ? 'SIMULATION' : 'STANDBY'}</span>
+              </span>
+              <span className="font-mono text-[9px] text-ops-live font-bold bg-ops-liveBg px-1.5 py-0.5 rounded border border-ops-liveBorder flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-ops-live" />
+                <span>v2.8</span>
+              </span>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
@@ -166,11 +180,25 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
             </div>
 
             <div>
-              <span className="text-[10px] text-ink-muted uppercase block font-semibold">Connection</span>
-              <span className={agoraRtc.getConnectionState() === 'CONNECTED' ? 'text-ops-live font-bold block' : 'text-ink-muted font-bold block'}>
+              <span className="text-[10px] text-ink-muted uppercase block font-semibold">Connection State</span>
+              <span className={`font-bold block truncate ${
+                agoraRtc.getConnectionState() === 'CONNECTED'
+                  ? 'text-ops-live'
+                  : agoraRtc.getConnectionState() === 'ERROR'
+                  ? 'text-rose-500 animate-pulse'
+                  : ['REQUESTING_MIC', 'GETTING_TOKEN', 'JOINING_AGORA', 'AGENT_STARTING'].includes(agoraRtc.getConnectionState())
+                  ? 'text-amber-400 animate-pulse'
+                  : 'text-ink-muted'
+              }`}>
                 {agoraRtc.getConnectionState()}
               </span>
             </div>
+
+            {agoraRtc.getConnectionState() === 'ERROR' && agoraRtc.getLastError() && (
+              <div className="col-span-2 p-1.5 bg-rose-500/10 border border-rose-500/20 rounded text-[10px] text-rose-400 font-mono">
+                ⚠️ {agoraRtc.getLastError()}
+              </div>
+            )}
 
             <div>
               <span className="text-[10px] text-ink-muted uppercase block font-semibold">Participants</span>

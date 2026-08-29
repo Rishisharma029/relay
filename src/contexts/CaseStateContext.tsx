@@ -165,7 +165,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           reason: 'Agora RTC Telemetry Hardware Return',
           timestamp: new Date().toLocaleTimeString(),
         })
-      } else if (tel.connectionState === 'CONNECTING' && caseState.status !== 'connecting') {
+      } else if (['REQUESTING_MIC', 'GETTING_TOKEN', 'JOINING_AGORA', 'AGENT_STARTING'].includes(tel.connectionState) && caseState.status !== 'connecting') {
         setCaseState((prev) => ({ ...prev, status: 'connecting' }))
       } else if (tel.connectionState === 'ERROR' && caseState.status !== 'failed') {
         setCaseState((prev) => ({ ...prev, status: 'failed' }))

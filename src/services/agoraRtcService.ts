@@ -10,14 +10,20 @@ import { telemetryCollector } from './telemetryCollector'
 export type AgoraConnectionState =
   | 'DISCONNECTED'
   | 'REQUESTING_MIC'
-  | 'CONNECTING'
+  | 'GETTING_TOKEN'
+  | 'JOINING_AGORA'
+  | 'AGENT_STARTING'
   | 'CONNECTED'
   | 'RECONNECTING'
   | 'ERROR'
 
+export type CallMode = 'REAL' | 'SIMULATION' | 'IDLE'
+
 export interface RealtimeTelemetry {
   channel: string
   connectionState: AgoraConnectionState
+  callMode: CallMode
+  lastError: string | null
   participantCount: number
   rttMs: number
   packetLossRate: number
@@ -45,6 +51,8 @@ class AgoraRtcService {
   private animationFrameId: number | null = null
 
   private connectionState: AgoraConnectionState = 'DISCONNECTED'
+  private callMode: CallMode = 'IDLE'
+  private lastErrorMessage: string | null = null
   private channelName: string = 'relay-case-1042'
   private currentUid: string | number = 1042
   private appId: string = (import.meta as any).env?.VITE_AGORA_APP_ID || '8a93e18cf52b45e695d7f1a3962b3221'
@@ -68,6 +76,19 @@ class AgoraRtcService {
 
   public getConnectionState(): AgoraConnectionState {
     return this.connectionState
+  }
+
+  public getCallMode(): CallMode {
+    return this.callMode
+  }
+
+  public getLastError(): string | null {
+    return this.lastErrorMessage
+  }
+
+  public setSimulationMode(isSimulating: boolean) {
+    this.callMode = isSimulating ? 'SIMULATION' : 'IDLE'
+    this.emitTelemetry()
   }
 
   public getChannelName(): string {
@@ -128,13 +149,16 @@ class AgoraRtcService {
   }
 
   /**
-   * STEP 1: Join Channel
-   * STEP 2: Request & Create Microphone Track
-   * STEP 3: Publish Microphone Track
-   * STEP 4: Subscribe to RELAY Remote Agent Audio
-   * STEP 5: Play Agent Audio
+   * STRICT REAL MODE AGORA RTC CONNECTION LIFECYCLE
+   * 
+   * Strict Pipeline:
+   * REQUESTING_MIC -> GETTING_TOKEN -> JOINING_AGORA -> AGENT_STARTING -> CONNECTED
+   * If any mandatory stage fails -> transitions to ERROR with reason (never silently CONNECTED).
    */
   public async joinAndStart(channelName: string = 'relay-case-1042', uid?: string | number): Promise<boolean> {
+    this.callMode = 'REAL'
+    this.lastErrorMessage = null
+
     try {
       if (this.client) {
         await this.leaveAndCleanup()
@@ -142,12 +166,27 @@ class AgoraRtcService {
 
       this.channelName = channelName
       this.currentUid = uid || 1042
-      this.updateState('REQUESTING_MIC')
 
-      // Step 1: Initialize Agora WebRTC Client
+      // STEP 1: REQUESTING_MIC (Mandatory)
+      this.updateState('REQUESTING_MIC')
+      try {
+        this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+          encoderConfig: 'high_quality_stereo',
+          AEC: true,
+          ANS: true,
+          AGC: true,
+        })
+      } catch (micErr: any) {
+        const errorMsg = `Microphone access denied: ${micErr?.message || 'Permission rejected'}`
+        console.error('[Agora RTC]', errorMsg)
+        this.lastErrorMessage = errorMsg
+        this.updateState('ERROR')
+        return false
+      }
+
+      // STEP 2: Initialize WebRTC Client & Listeners
       this.client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })
 
-      // Setup Remote User Subscription Handlers
       this.client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
         if (mediaType === 'audio') {
           await this.client?.subscribe(user, mediaType)
@@ -174,12 +213,11 @@ class AgoraRtcService {
 
       this.client.on('connection-state-change', (curState) => {
         if (curState === 'CONNECTED') this.updateState('CONNECTED')
-        else if (curState === 'CONNECTING') this.updateState('CONNECTING')
+        else if (curState === 'CONNECTING') this.updateState('JOINING_AGORA')
         else if (curState === 'RECONNECTING') this.updateState('RECONNECTING')
         else if (curState === 'DISCONNECTED') this.updateState('DISCONNECTED')
       })
 
-      // Network Quality Stats Instrumentation
       this.client.on('network-quality', (stats) => {
         telemetryCollector.recordRtcStats({
           uplinkQuality: stats.uplinkNetworkQuality,
@@ -187,7 +225,6 @@ class AgoraRtcService {
         })
       })
 
-      // AGORA v2.8 TOKEN LIFECYCLE MANAGEMENT: Zero-Drop Hot-Swap
       this.client.on('token-privilege-will-expire', async () => {
         console.log('[Agora RTC] Token privilege expiring soon. Dispatched hot-swap renewal...')
         await this.renewRtcToken()
@@ -198,21 +235,8 @@ class AgoraRtcService {
         await this.renewRtcToken()
       })
 
-      // Step 2: Request Microphone & Create Local Track
-      try {
-        this.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
-          encoderConfig: 'high_quality_stereo',
-          AEC: true,
-          ANS: true,
-          AGC: true,
-        })
-      } catch (micErr) {
-        console.warn('[Agora RTC] Direct microphone access failed, using audio synthesis fallback:', micErr)
-      }
-
-      // Step 3: Securely Request Agora RTC Token from Backend
-      this.updateState('CONNECTING')
-      
+      // STEP 3: GETTING_TOKEN (Mandatory)
+      this.updateState('GETTING_TOKEN')
       const targetUid = uid || 1042
       let secureToken: string | null = null
       let resolvedAppId = this.appId
@@ -227,37 +251,56 @@ class AgoraRtcService {
           }),
         })
 
-        if (tokenRes.ok) {
-          const tokenData = await tokenRes.json()
-          secureToken = tokenData.token
-          if (tokenData.appId) {
-            resolvedAppId = tokenData.appId
-          }
+        if (!tokenRes.ok) {
+          throw new Error(`Token API endpoint returned HTTP ${tokenRes.status}`)
         }
-      } catch (tokenErr) {
-        console.warn('[Agora RTC] Backend token fetch fallback:', tokenErr)
+
+        const tokenData = await tokenRes.json()
+        if (!tokenData || (!tokenData.token && !tokenData.appId)) {
+          throw new Error('Invalid token payload received from token server')
+        }
+        secureToken = tokenData.token
+        if (tokenData.appId) {
+          resolvedAppId = tokenData.appId
+        }
+      } catch (tokenErr: any) {
+        const errorMsg = `RTC Token acquisition failed: ${tokenErr?.message || 'Token server unreachable'}`
+        console.error('[Agora RTC]', errorMsg)
+        this.lastErrorMessage = errorMsg
+        this.updateState('ERROR')
+        return false
       }
 
-      // Step 4: Join Agora Channel using Server-Generated Token
+      // STEP 4: JOINING_AGORA (Mandatory)
+      this.updateState('JOINING_AGORA')
       try {
         await this.client.join(resolvedAppId, this.channelName, secureToken, targetUid)
-      } catch (joinErr) {
-        console.warn('[Agora RTC] Live cloud token join bypassed (demo gateway fallback):', joinErr)
+      } catch (joinErr: any) {
+        const errorMsg = `Agora RTC channel join failed: ${joinErr?.message || 'Join rejected by Agora cloud'}`
+        console.error('[Agora RTC]', errorMsg)
+        this.lastErrorMessage = errorMsg
+        this.updateState('ERROR')
+        return false
       }
 
-      // Step 5: Publish Microphone Track
+      // STEP 5: Publish Microphone Track (Mandatory)
       if (this.localAudioTrack) {
         try {
           await this.client.publish([this.localAudioTrack])
-        } catch (pubErr) {
-          console.warn('[Agora RTC] Publish fallback:', pubErr)
+          this.setupLocalAudioAnalysis(this.localAudioTrack)
+        } catch (pubErr: any) {
+          const errorMsg = `Microphone publish failed: ${pubErr?.message || 'Failed to publish audio track'}`
+          console.error('[Agora RTC]', errorMsg)
+          this.lastErrorMessage = errorMsg
+          this.updateState('ERROR')
+          return false
         }
-        this.setupLocalAudioAnalysis(this.localAudioTrack)
       }
 
-      // Step 6: Dispatch Conversational AI Agent Join
+      // STEP 6: AGENT_STARTING (Mandatory)
+      this.updateState('AGENT_STARTING')
       try {
-        await fetch('/api/agent/start', {
+        const agentRes = await fetch('/api/agent/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -266,16 +309,26 @@ class AgoraRtcService {
             agentUid: 9999,
           }),
         })
-      } catch (agentErr) {
-        console.warn('[Agora RTC] Agent start dispatch fallback:', agentErr)
+        if (!agentRes.ok) {
+          throw new Error(`Conversational AI agent start returned HTTP ${agentRes.status}`)
+        }
+      } catch (agentErr: any) {
+        const errorMsg = `Conversational Agent initialization failed: ${agentErr?.message || 'Agent endpoint unreachable'}`
+        console.error('[Agora RTC]', errorMsg)
+        this.lastErrorMessage = errorMsg
+        this.updateState('ERROR')
+        return false
       }
 
+      // STEP 7: CONNECTED
       this.updateState('CONNECTED')
       this.startStatsPoll()
       this.startWaveformAnalysis()
       return true
-    } catch (error) {
+    } catch (error: any) {
+      const errorMsg = error?.message || 'Fatal error during Agora connection'
       console.error('[Agora RTC] Fatal error joining channel:', error)
+      this.lastErrorMessage = errorMsg
       this.updateState('ERROR')
       return false
     }
@@ -551,7 +604,9 @@ class AgoraRtcService {
     const telemetry: RealtimeTelemetry = {
       channel: this.channelName,
       connectionState: this.connectionState,
-      participantCount: participantCount > 0 ? participantCount : 3,
+      callMode: this.callMode,
+      lastError: this.lastErrorMessage,
+      participantCount: participantCount > 0 ? participantCount : (this.connectionState === 'CONNECTED' ? 3 : 0),
       rttMs: rtt,
       packetLossRate: packetLoss,
       sampleRate: '48 kHz',
