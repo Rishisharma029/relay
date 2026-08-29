@@ -8,6 +8,8 @@
 
 *The AI that runs customer calls — with live transcription, autonomous tool calling, human takeover, and an irreversible financial approval gate.*
 
+[![Live Demo](https://img.shields.io/badge/LIVE%20DEMO-rishisharma029.github.io%2Frelay-0066FF?style=for-the-badge&logo=githubpages&logoColor=white)](https://rishisharma029.github.io/relay/)
+
 [![Build](https://img.shields.io/badge/build-passing-22c55e?style=flat-square)](https://github.com/Rishisharma029/relay)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-18.3-61dafb?style=flat-square&logo=react)](https://react.dev/)
@@ -16,6 +18,25 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](./LICENSE)
 
 </div>
+
+---
+
+## ⚡ Live Demo & 6 Evaluator Scenarios
+
+👉 **Live URL:** [https://rishisharma029.github.io/relay/](https://rishisharma029.github.io/relay/)
+
+RELAY includes **6 interactive end-to-end evaluator scenarios** with turn-by-turn spoken dialogue, real-time ASR/TTS, autonomous tool calling, policy evaluation, and financial action approvals. Access them directly via the top **`⚡ SCENARIOS`** strip or by pressing **`Alt+D`**:
+
+| # | Scenario | Case ID | Language | Key Feature Demonstrated |
+|---|---|---|---|---|
+| **1** | **Delivery Refund** | `RLY-1042` | Hindi | Order #84921 delayed 3 days → `getOrderStatus()` → 5-point policy check → Operator Approval for ₹1,499 instant UPI refund. |
+| **2** | **Payment Failure** | `RLY-1039` | English | Double debit dispute → `reconcilePaymentGateway()` → Auto-reversal & ledger credit of duplicate ₹2,499. |
+| **3** | **Language Switch** | `RLY-1044` | Hinglish → Hindi | Mid-call dynamic language switch with zero session reload → Shipment reroute to Noida Sector 62. |
+| **4** | **Human Takeover** | `RLY-1038` | English | Enterprise contract cancellation → Automatic high-risk escalation → Live Maya Sharma takeover & handoff brief. |
+| **5** | **Tool Failure** | `RLY-1037` | Hindi | Carrier tracking 504 Gateway Timeout → Graceful error boundary → Exponential backoff retry & manual trace fallback. |
+| **6** | **Angry Customer** | `RLY-1031` | Hindi / Hinglish | Hostile customer with 3 delayed orders → `getCustomerOrderHistory()` → Retention apology credit ₹1,000 approval. |
+
+Each scenario plays out **turn-by-turn with realistic speak-then-reply pacing**, voice synthesis matching the active agent gender (`♀ Female` / `♂ Male`), and includes `[ 🔄 REPLAY ]` and `[ ⏭ SKIP TO END ]` playback controls.
 
 ---
 
@@ -500,6 +521,30 @@ Inspect all active idempotency keys (audit/debug).
 
 ### `GET /api/db/stats`
 Database health and row counts.
+
+---
+
+## 🚀 Deployment & GitHub Pages
+
+### Live Hosted Demo
+- **URL:** [https://rishisharma029.github.io/relay/](https://rishisharma029.github.io/relay/)
+- **Automated CI/CD:** Powered by GitHub Actions workflow (`.github/workflows/deploy.yml`) on every push to `main`.
+
+### Deploying to GitHub Pages Manually
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Build and publish directly to gh-pages branch
+npm run deploy
+```
+
+### GitHub Repository Settings Setup (1-time)
+1. Go to **Settings** → **Pages** on your repository.
+2. Under **Build and deployment** → **Branch**:
+   - Select **`gh-pages`**
+   - Folder: **`/ (root)`**
+   - Click **Save**
 
 ---
 
