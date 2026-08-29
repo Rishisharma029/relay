@@ -2,19 +2,35 @@ import React, { useEffect, useRef, useState } from 'react'
 import { AlertCircle, Volume2, Mic } from 'lucide-react'
 import { agoraRtc, RealtimeTelemetry } from '../../services/agoraRtcService'
 import { telemetryCollector, MeasuredTelemetry } from '../../services/telemetryCollector'
+import { CallState } from '../../types/callState'
 
 export type SpeakerState = 'customer_speaking' | 'relay_speaking' | 'customer_interrupted' | 'listening'
 
 interface WaveformMonitorProps {
   initialState?: SpeakerState
+  callState?: CallState
 }
 
 export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
-  initialState = 'customer_speaking',
+  initialState = 'listening',
+  callState,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [speakerState, setSpeakerState] = useState<SpeakerState>(initialState)
   const [seconds, setSeconds] = useState<number>(42)
+
+  // Synchronize speaker state with external callState
+  useEffect(() => {
+    if (callState === 'CUSTOMER_SPEAKING') {
+      setSpeakerState('customer_speaking')
+    } else if (callState === 'RELAY_SPEAKING') {
+      setSpeakerState('relay_speaking')
+    } else if (callState === 'CUSTOMER_INTERRUPTED') {
+      setSpeakerState('customer_interrupted')
+    } else if (callState === 'RELAY_LISTENING' || callState === 'CONNECTED') {
+      setSpeakerState('listening')
+    }
+  }, [callState])
   const [telemetry, setTelemetry] = useState<RealtimeTelemetry>({
     channel: 'relay-case-1042',
     connectionState: 'CONNECTED',
@@ -224,29 +240,35 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
   }
 
   return (
-    <div className="bg-canvas-pure border border-border-subtle rounded-[4px] p-2.5 flex flex-col gap-2 select-none">
+    <div className="bg-canvas-pure border border-border-subtle rounded-[4px] p-1.5 px-2 flex flex-col gap-1 select-none">
       {/* Top Monitor Header */}
-      <div className="flex items-center justify-between text-[10px] font-mono">
+      <div className="flex items-center justify-between text-[10px] font-mono leading-none">
         <div className="flex items-center gap-2">
           {telemetry.isMuted ? (
-            <div className="flex items-center gap-1.5 font-bold text-ink-muted">
-              <Mic className="w-3 h-3 text-ink-muted opacity-50" />
-              <span>MICROPHONE MUTED // 0.0 dB</span>
+            <div className="flex items-center gap-1 font-bold text-ink-muted">
+              <Mic className="w-2.5 h-2.5 text-ink-muted opacity-50" />
+              <span>MUTED // 0.0 dB</span>
             </div>
           ) : speakerState === 'customer_speaking' ? (
-            <div className="flex items-center gap-1.5 font-bold text-accent">
-              <Mic className="w-3 h-3 text-accent" />
-              <span>LIVE AUDIO STREAM // 48kHz OPUS</span>
+            <div className="flex items-center gap-1 font-bold text-accent">
+              <Mic className="w-2.5 h-2.5 text-accent" />
+              <span>LIVE AUDIO // 48kHz</span>
             </div>
           ) : speakerState === 'relay_speaking' ? (
-            <div className="flex items-center gap-1.5 font-bold text-ops-live">
-              <Volume2 className="w-3 h-3 text-ops-live" />
-              <span>RELAY SYNTHESIZER STREAM // 24ms</span>
+            <div className="flex items-center gap-1 font-bold text-ops-live">
+              <Volume2 className="w-2.5 h-2.5 text-ops-live" />
+              <span>RELAY TTS // 24ms</span>
+            </div>
+          ) : speakerState === 'customer_interrupted' ? (
+            <div className="flex items-center gap-1 font-bold text-ops-critical">
+              <AlertCircle className="w-2.5 h-2.5 text-ops-critical" />
+              <span>BARGE-IN PREEMPTED</span>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 font-bold text-ops-critical">
-              <AlertCircle className="w-3 h-3 text-ops-critical" />
-              <span>BARGE-IN DETECTED // STREAM PREEMPTED</span>
+            <div className="flex items-center gap-1.5 text-ink-muted">
+              <span className="w-1.5 h-1.5 rounded-full bg-ops-live animate-pulse" />
+              <span>LISTENING // VAD ARMED</span>
+              <span className="tabular-nums font-mono text-ink-primary font-bold ml-1">({formatTime(seconds)})</span>
             </div>
           )}
         </div>
@@ -254,28 +276,28 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={handleTriggerInterruption}
-            className={`px-1.5 py-0.5 rounded-[2px] font-mono text-[9px] border transition-colors cursor-pointer ${
+            className={`px-1.5 py-0.2 rounded-[2px] font-mono text-[9px] border transition-colors cursor-pointer ${
               speakerState === 'customer_interrupted'
                 ? 'bg-ops-criticalBg text-ops-critical border-[#FECACA] font-bold'
                 : 'bg-canvas-subtle text-ink-secondary border-border-subtle hover:text-ink-primary hover:bg-canvas-muted'
             }`}
             title="Click to simulate customer barge-in interruption"
           >
-            {speakerState === 'customer_interrupted' ? 'RESET INTERRUPTION' : 'SIMULATE BARGE-IN'}
+            {speakerState === 'customer_interrupted' ? 'RESET INTERRUPTION' : 'BARGE-IN'}
           </button>
 
-          <div className="flex items-center gap-1.5 font-mono text-[10px] text-ink-muted">
+          <div className="flex items-center gap-1 font-mono text-[9px] text-ink-muted hidden sm:flex">
             <span className="tabular-nums">RTT: <strong className="text-ink-primary font-semibold">{measured.rttMs}ms</strong></span>
             <span className="opacity-40">·</span>
             <span className="tabular-nums">JITTER: <strong className="text-ink-primary font-semibold">{measured.jitterMs}ms</strong></span>
             <span className="opacity-40">·</span>
-            <span className="tabular-nums">LOSS: <strong className="text-ink-primary font-semibold">{(measured.packetLossRate * 100).toFixed(2)}%</strong></span>
+            <span className="tabular-nums">LOSS: <strong className="text-ink-primary font-semibold">{(measured.packetLossRate * 100).toFixed(1)}%</strong></span>
           </div>
         </div>
       </div>
 
       {/* Thin Continuous Waveform Canvas */}
-      <div className="h-12 w-full bg-canvas-subtle rounded-[2px] border border-border-subtle relative overflow-hidden flex items-center justify-center">
+      <div className="h-7 w-full bg-canvas-subtle rounded-[2px] border border-border-subtle relative overflow-hidden flex items-center justify-center">
         <canvas
           ref={canvasRef}
           className="w-full h-full block"
@@ -284,62 +306,22 @@ export const WaveformMonitor: React.FC<WaveformMonitorProps> = ({
         />
 
         {/* Live Audio Stream Level & Measured Latencies */}
-        <div className="absolute right-2 top-1 flex items-center gap-2 text-[9px] font-mono text-ink-muted/70 pointer-events-none">
-          <span>TURN: {(measured.agentTurnLatencyMs / 1000).toFixed(2)}s</span>
+        <div className="absolute right-1.5 top-0.5 flex items-center gap-1.5 text-[8px] font-mono text-ink-muted/70 pointer-events-none">
+          <span>TURN: {(measured.agentTurnLatencyMs / 1000).toFixed(1)}s</span>
           <span>TOOL: {measured.lastToolDurationMs}ms</span>
-          <span>VOX_RMS: {speakerState === 'customer_interrupted' ? '-4.2 dB' : telemetry.isMuted ? '-∞ dB' : '-14.8 dB'}</span>
         </div>
       </div>
 
       {/* Under-Waveform State & Section 26 Interruption Card */}
       {speakerState === 'customer_interrupted' ? (
-        <div className="bg-ops-criticalBg border border-ops-criticalBorder rounded-[3px] p-2.5 flex items-center justify-between font-mono">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-ops-critical font-bold text-xs tracking-tight uppercase">
-              <span className="w-1.5 h-1.5 rounded-full bg-ops-critical animate-ping shrink-0" />
-              <span>CUSTOMER INTERRUPTED</span>
-            </div>
-            <div className="text-[11px] text-ink-primary font-medium">
-              AI response cancelled
-            </div>
-            <div className="text-[10px] text-ink-secondary flex items-center gap-1 font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-              <span>Listening...</span>
-            </div>
+        <div className="bg-ops-criticalBg border border-ops-criticalBorder rounded-[2px] p-1.5 flex items-center justify-between font-mono text-[10px]">
+          <div className="flex items-center gap-2 text-ops-critical font-bold uppercase">
+            <span className="w-1.5 h-1.5 rounded-full bg-ops-critical animate-ping shrink-0" />
+            <span>BARGE-IN: AI STOPPED (12ms)</span>
           </div>
-
-          <div className="text-right space-y-0.5">
-            <span className="text-[10px] text-ops-critical font-mono block tabular-nums font-bold">
-              PREEMPTION: 12ms
-            </span>
-            <span className="text-[9px] text-ink-muted font-mono block tabular-nums">
-              STREAM TRUNCATED (12ms)
-            </span>
-          </div>
+          <span className="text-[9px] text-ops-critical font-bold tabular-nums">PREEMPTION: 12ms</span>
         </div>
-      ) : (
-        <div className="flex items-center justify-between text-xs font-mono px-1">
-          <div className="flex items-baseline gap-2">
-            <span className="font-bold text-ink-primary tabular-nums">
-              {formatTime(seconds)}
-            </span>
-            <span className="text-ink-secondary text-[11px]">
-              {telemetry.isMuted
-                ? 'Microphone muted by operator'
-                : speakerState === 'customer_speaking'
-                ? 'Customer speaking'
-                : speakerState === 'relay_speaking'
-                ? 'RELAY synthesizing response'
-                : 'Listening for speech input'}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-[10px] text-ink-muted">
-            <span className="w-1.5 h-1.5 rounded-full bg-ops-live animate-pulse" />
-            <span>AGORA RTC CHANNEL SYNC</span>
-          </div>
-        </div>
-      )}
+      ) : null}
     </div>
   )
 }

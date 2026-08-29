@@ -19,11 +19,18 @@ class SpeechRecognitionService {
   private isListening: boolean = false
   private currentLanguage: string = 'hi-IN'
   private subscribers: Set<SpeechCallback> = new Set()
+  private speakingSubscribers: Set<(isSpeaking: boolean) => void> = new Set()
   private restartTimeout: any = null
+  private isSynthesizingSpeech: boolean = false
+  private silenceTimer: any = null
   private isSpeechSynthesisSupported: boolean = typeof window !== 'undefined' && 'speechSynthesis' in window
 
   constructor() {
     this.initRecognition()
+  }
+
+  public isSpeakingTTS(): boolean {
+    return this.isSynthesizingSpeech || (typeof window !== 'undefined' && !!window.speechSynthesis?.speaking)
   }
 
   private initRecognition() {
@@ -47,7 +54,26 @@ class SpeechRecognitionService {
       this.recognition.maxAlternatives = 1
       this.recognition.lang = this.currentLanguage
 
+      this.recognition.onspeechstart = () => {
+        // Echo barrier: Ignore mic trigger if RELAY is speaking
+        if (this.isSpeakingTTS()) return
+        this.notifySpeaking(true)
+      }
+
+      this.recognition.onspeechend = () => {
+        this.notifySpeaking(false)
+      }
+
+      this.recognition.onaudioend = () => {
+        this.notifySpeaking(false)
+      }
+
       this.recognition.onresult = (event: any) => {
+        // Echo barrier: Strictly discard mic input if RELAY is synthesizing speech
+        if (this.isSpeakingTTS()) {
+          return
+        }
+
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           const result = event.results[i]
           const text = result[0]?.transcript?.trim()
@@ -55,6 +81,17 @@ class SpeechRecognitionService {
 
           const isFinal = result.isFinal
           const confidence = result[0]?.confidence || 0.9
+
+          if (!isFinal) {
+            this.notifySpeaking(true)
+            if (this.silenceTimer) clearTimeout(this.silenceTimer)
+            this.silenceTimer = setTimeout(() => {
+              this.notifySpeaking(false)
+            }, 1200)
+          } else {
+            this.notifySpeaking(false)
+            if (this.silenceTimer) clearTimeout(this.silenceTimer)
+          }
 
           this.notifySubscribers({
             text,
@@ -67,12 +104,14 @@ class SpeechRecognitionService {
 
       this.recognition.onerror = (event: any) => {
         console.warn('[ASR] Speech recognition error:', event.error)
+        this.notifySpeaking(false)
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           this.isListening = false
         }
       }
 
       this.recognition.onend = () => {
+        this.notifySpeaking(false)
         if (this.isListening) {
           // Continuous loop: restart after short delay
           this.restartTimeout = setTimeout(() => {
@@ -125,9 +164,14 @@ class SpeechRecognitionService {
 
   public stopListening() {
     this.isListening = false
+    this.notifySpeaking(false)
     if (this.restartTimeout) {
       clearTimeout(this.restartTimeout)
       this.restartTimeout = null
+    }
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer)
+      this.silenceTimer = null
     }
     if (this.recognition) {
       try {
@@ -139,6 +183,21 @@ class SpeechRecognitionService {
   public subscribe(cb: SpeechCallback): () => void {
     this.subscribers.add(cb)
     return () => this.subscribers.delete(cb)
+  }
+
+  public subscribeSpeaking(cb: (isSpeaking: boolean) => void): () => void {
+    this.speakingSubscribers.add(cb)
+    return () => this.speakingSubscribers.delete(cb)
+  }
+
+  private notifySpeaking(isSpeaking: boolean) {
+    this.speakingSubscribers.forEach((cb) => {
+      try {
+        cb(isSpeaking)
+      } catch (err) {
+        console.error('[ASR] Speaking subscriber callback error:', err)
+      }
+    })
   }
 
   private notifySubscribers(payload: SpeechRecognitionResultPayload) {
@@ -164,14 +223,55 @@ class SpeechRecognitionService {
   /**
    * Browser Speech Synthesis (TTS): Speaks text out loud through speakers with strict gender voice matching
    */
-  public speak(text: string, language: string = 'hi-IN', gender?: 'female' | 'male') {
-    if (!this.isSpeechSynthesisSupported || !text) return
+  public speak(
+    text: string,
+    language: string = 'hi-IN',
+    gender?: 'female' | 'male',
+    onEnd?: () => void,
+    onStart?: () => void
+  ) {
+    if (!this.isSpeechSynthesisSupported || !text) {
+      onEnd?.()
+      return
+    }
 
     try {
+      this.isSynthesizingSpeech = true
       window.speechSynthesis.cancel() // Cancel any in-flight utterance
 
       const cleanText = text.replace(/[*_#"`]/g, '').trim()
       const utterance = new SpeechSynthesisUtterance(cleanText)
+
+      let finished = false
+      const finishOnce = () => {
+        if (!finished) {
+          finished = true
+          setTimeout(() => {
+            this.isSynthesizingSpeech = false
+          }, 350)
+          onEnd?.()
+        }
+      }
+
+      utterance.onstart = () => {
+        this.isSynthesizingSpeech = true
+        onStart?.()
+      }
+
+      utterance.onend = () => {
+        finishOnce()
+      }
+
+      utterance.onerror = (e) => {
+        console.warn('[TTS] Speech error or canceled:', e)
+        finishOnce()
+      }
+
+      // Safety timeout in case TTS hangs without emitting onend
+      const estDurationMs = Math.max(1500, Math.min(12000, (cleanText.length / 15) * 1000 + 1000))
+      setTimeout(() => {
+        finishOnce()
+      }, estDurationMs)
 
       const targetGender = gender || this.agentGender
       const isMale = targetGender === 'male'
@@ -239,6 +339,7 @@ class SpeechRecognitionService {
       window.speechSynthesis.speak(utterance)
     } catch (err) {
       console.warn('[TTS] Speech synthesis playback error:', err)
+      onEnd?.()
     }
   }
 }

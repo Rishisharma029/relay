@@ -577,21 +577,21 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
         </div>
 
         {/* SECTION 39: FAILURE UX CARD (IF ORDER API IS DOWN) */}
-        {isServiceFailed ? (
+        {isServiceFailed || caseState.activeFailure?.state === 'TOOL_ERROR' || caseState.status === 'failed' ? (
           <div className="bg-ops-criticalBg border-2 border-ops-criticalBorder rounded-[4px] p-3.5 space-y-3 font-mono shadow-hairline animate-in fade-in duration-150">
             <div className="flex items-center justify-between pb-1.5 border-b border-ops-criticalBorder/40">
               <div className="flex items-center gap-1.5 font-bold text-ops-critical text-xs uppercase tracking-tight">
                 <AlertOctagon className="w-3.5 h-3.5 shrink-0" />
-                <span>ORDER SERVICE UNAVAILABLE</span>
+                <span>SERVICE EXCEPTION // 504 TIMEOUT</span>
               </div>
             </div>
 
             <div className="space-y-1 text-xs">
               <p className="font-sans text-xs font-semibold text-ink-primary">
-                RELAY could not verify the order.
+                {caseState.activeFailure?.message || 'Carrier tracking gateway 504 Gateway Timeout'}
               </p>
               <p className="font-mono text-[10px] text-ink-secondary">
-                No action has been taken.
+                No unauthorized actions committed. Graceful fallback active.
               </p>
             </div>
 
@@ -604,7 +604,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                 className="flex-1 font-mono text-[10px] font-bold uppercase h-7 bg-accent text-white hover:bg-accent-hover gap-1"
               >
                 <RefreshCw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} />
-                <span>{isRetrying ? 'RETRYING...' : 'RETRY'}</span>
+                <span>{isRetrying ? 'RETRYING...' : 'RETRY TRACE'}</span>
               </Button>
 
               <Button
@@ -631,13 +631,14 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                     ACTION REQUEST
                   </span>
                   <span className="text-[9px] font-bold text-ops-warning bg-ops-warningBg px-1.5 py-0.5 rounded border border-[#FED7AA]">
-                    MEDIUM RISK
+                    {caseState.activeAction?.riskTier || 'MEDIUM'} RISK
                   </span>
                 </div>
 
                 <div>
                   <div className="text-base font-bold text-ink-primary tracking-tight">
-                    Refund ₹1,499
+                    {caseState.activeAction?.title || 'Action Approval'}{' '}
+                    {caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : ''}
                   </div>
                 </div>
 
@@ -645,11 +646,13 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                 <div className="bg-canvas-subtle p-2 rounded-[3px] border border-border-subtle space-y-1.5 text-[10px] font-mono">
                   <div className="flex items-center justify-between border-b border-border-subtle/60 pb-1">
                     <span className="font-bold text-ink-primary uppercase tracking-tight">EVIDENCE-BACKED ACTION</span>
-                    <Badge variant="live" size="xs">3 PROOFS</Badge>
+                    <Badge variant="live" size="xs">
+                      {caseState.activeAction?.evidence?.length || caseState.facts.length || 3} PROOFS
+                    </Badge>
                   </div>
                   <div className="flex flex-wrap gap-1 pt-0.5">
-                    {['order_delayed', 'customer_requested_refund', 'policy_eligible'].map((tag) => (
-                      <span key={tag} className="bg-canvas-pure px-1.5 py-0.5 rounded border border-border text-[9px] text-accent font-semibold font-mono">
+                    {(caseState.activeAction?.justification || caseState.facts.map((f) => f.label)).slice(0, 4).map((tag, idx) => (
+                      <span key={idx} className="bg-canvas-pure px-1.5 py-0.5 rounded border border-border text-[9px] text-accent font-semibold font-mono">
                         ✓ {tag}
                       </span>
                     ))}
@@ -663,23 +666,23 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                   </span>
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
-                    <span>Customer verified (Aarav Mehta · Platinum)</span>
+                    <span>Customer verified ({caseState.customerName || 'Customer'} · {caseState.customerTier || 'Platinum'})</span>
                   </div>
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
-                    <span>Order exists (#84921 · ₹1,499)</span>
+                    <span>Intent verified ({caseState.intent || 'Customer Inquiry'})</span>
                   </div>
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
-                    <span>Amount within limit (₹1,499 ≤ cap)</span>
+                    <span>Threshold within limits ({caseState.activeAction?.amount ? `₹${caseState.activeAction.amount} ≤ SLA` : 'Policy authorized'})</span>
                   </div>
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
-                    <span>Policy eligible (SLA breach +3d)</span>
+                    <span>Policy eligible ({caseState.activeAction?.policyId || 'POL-REFUND-3.2'})</span>
                   </div>
                   <div className="flex items-center gap-1.5 text-ops-live font-medium">
                     <Check className="w-3 h-3 shrink-0" strokeWidth={3} />
-                    <span>No duplicate action (0 prior refunds)</span>
+                    <span>No duplicate action verified</span>
                   </div>
                 </div>
 
@@ -692,10 +695,10 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                     </Badge>
                   </div>
                   <div className="text-ink-primary font-bold text-[11px]">
-                    Refund Policy v3.2 · Section 4.1
+                    Refund & Dispute Matrix · Section 4.1
                   </div>
                   <p className="text-[10px] font-sans text-ink-secondary leading-snug">
-                    "Carrier exception &gt;3 business days eligible for instant 100% refund."
+                    "Verified exceptions and customer disputes eligible for immediate settlement."
                   </p>
                   <div className="pt-1 flex justify-end">
                     <button
@@ -721,7 +724,7 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
                     onClick={handleApprove}
                     className="w-full font-mono text-xs font-bold tracking-wider uppercase h-8 bg-accent text-white hover:bg-accent-hover active:bg-[#083070]"
                   >
-                    [ APPROVE ]
+                    [ APPROVE {caseState.activeAction?.title || 'ACTION'} {caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : ''} ]
                   </Button>
 
                   <div className="flex justify-center">
@@ -737,16 +740,16 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({ onTa
               </div>
             )}
 
-            {/* STATE 2: APPROVED / REFUND INITIATED (CLEAN RESTRAINT) */}
+            {/* STATE 2: APPROVED / ACTION INITIATED (CLEAN RESTRAINT) */}
             {refundState === 'approved' && (
               <div className="space-y-2 py-1">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-ops-live">
                   <Check className="w-4 h-4 stroke-[3]" />
-                  <span>✓ REFUND INITIATED</span>
+                  <span>✓ {caseState.activeAction?.title ? `${caseState.activeAction.title.toUpperCase()} COMMITTED` : 'ACTION INITIATED'}</span>
                 </div>
 
                 <div className="text-lg font-bold text-ink-primary tabular-nums">
-                  ₹1,499
+                  {caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : 'Settled & Verified'}
                 </div>
 
                 <div className="text-[11px] text-ink-muted tabular-nums">

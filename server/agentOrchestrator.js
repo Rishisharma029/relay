@@ -1,6 +1,6 @@
-/**
+﻿/**
  * RELAY — Autonomous AI Agent Reasoning & Function Calling (Tool Calling) Engine
- * Multi-Turn Conversational Reasoning, Tool Calling, Policy Grounding & Gender-Aware Synthesis
+ * Multi-Turn Conversational Reasoning, Gemini 3.5/2.5 Intelligence, Tool Calling, Policy Grounding & Gender-Aware Synthesis
  */
 
 import { ToolRouter } from './toolRouter.js'
@@ -11,6 +11,7 @@ import { LLM_TIMEOUT_MS } from './config.js'
 import { db } from './db/database.js'
 import { MemoryService } from './memory/memoryService.js'
 import { KnowledgeService } from './knowledge/knowledgeService.js'
+import { GeminiService } from './geminiService.js'
 import {
   FAILURE_STATES,
   buildFailureEvent,
@@ -22,7 +23,7 @@ export const AGENT_TOOL_DEFINITIONS = getApprovedToolDefinitions()
 /**
  * Autonomous Conversation Turn Processing
  * Dynamic Intent Detection, Tool Sequencing, Multi-Turn Dialog Branching,
- * and Gender-Aware Voice & Grammar Synthesis.
+ * Gemini Reasoning, and Gender-Aware Voice & Grammar Synthesis.
  */
 export async function processAgentTurn(
   customerUtterance = 'Mera order 5 din se nahi aaya.',
@@ -51,7 +52,6 @@ export async function processAgentTurn(
   }
 
   // ── 2. Customer Speech Transcript Event ──────────────────────────────────
-  const lower = customerUtterance.toLowerCase()
   const isHindiText =
     customerUtterance.includes('Mera') ||
     customerUtterance.includes('chahiye') ||
@@ -83,7 +83,7 @@ export async function processAgentTurn(
 
   // ── 3. Handle Language Switch Turn ───────────────────────────────────────
   const isMale = agentGender === 'male'
-  if (shiftResult.shifted) {
+  if (shiftResult.shifted && (customerUtterance.toLowerCase().includes('switch') || customerUtterance.toLowerCase().includes('speak in') || customerUtterance.toLowerCase().includes('continue in'))) {
     const isEn = activeLanguage === 'en-IN'
     const agentText = isEn
       ? "Certainly, I'll continue in English. How can I assist you with your order today?"
@@ -111,139 +111,174 @@ export async function processAgentTurn(
     }
   }
 
-  // ── 4. Conversational Multi-Turn Intent Classifier ─────────────────────────
+  // ── 4. Context & Policy Retrieval ──────────────────────────────────────────
+  const memoryContext = MemoryService.getFullMemoryContext(caseId, customerUtterance)
+  const customerName = (customerNameOverride || memoryContext.customerMemory?.name || 'Customer').split(' ')[0]
+  const policyEvidence = KnowledgeService.retrievePolicyEvidence(customerUtterance)
+
+  // ── 5. Gemini 2.5/3.5 Reasoning Engine Invocation (with deterministic fallback) ──
   let detectedIntent = 'general_inquiry'
   let toolsToCall = []
+  let geminiAgentResponse = null
+  let geminiAgentTranslation = null
 
-  // Extract order ID if explicitly spoken or default to context
   const matchedOrderId = customerUtterance.match(/#?(\d{5})/)?.[1] || '84921'
 
-  // Natural Language Intent Patterns
-  const isGreeting =
-    lower.includes('hello') ||
-    lower.includes('namaste') ||
-    lower.includes('hi') ||
-    lower.includes('hey') ||
-    lower.includes('sun rahe') ||
-    lower.includes('good morning') ||
-    lower.includes('good evening')
+  try {
+    const geminiResult = await Promise.race([
+      GeminiService.executeReasoningTurn({
+        customerUtterance,
+        caseId,
+        customerName,
+        agentGender,
+        activeLanguage,
+        memoryContext,
+        policyEvidence,
+      }),
+      new Promise((resolve) => setTimeout(() => resolve(null), 3500)),
+    ])
 
-  const isDelivery =
-    lower.includes('order') ||
-    lower.includes('din') ||
-    lower.includes('aaya') ||
-    lower.includes('delivery') ||
-    lower.includes('delay') ||
-    lower.includes('late') ||
-    lower.includes('kaha') ||
-    lower.includes('status') ||
-    lower.includes('track')
-
-  const isRefund =
-    lower.includes('refund') ||
-    lower.includes('paisa') ||
-    lower.includes('paise') ||
-    lower.includes('chahiye') ||
-    lower.includes('wapas') ||
-    lower.includes('return')
-
-  const isPaymentMethod =
-    lower.includes('upi') ||
-    lower.includes('bank') ||
-    lower.includes('account') ||
-    lower.includes('original') ||
-    lower.includes('gpay') ||
-    lower.includes('phonepe') ||
-    lower.includes('paytm')
-
-  const isCancel =
-    lower.includes('cancel') ||
-    lower.includes('radd') ||
-    lower.includes('band kar') ||
-    lower.includes('nahi chahiye')
-
-  const isAddress =
-    lower.includes('address') ||
-    lower.includes('pata') ||
-    lower.includes('pin code') ||
-    lower.includes('location') ||
-    lower.includes('change')
-
-  const isPaymentFail =
-    lower.includes('cut gaya') ||
-    lower.includes('deduct') ||
-    lower.includes('fail') ||
-    lower.includes('kat gaye')
-
-  const isPolicy =
-    lower.includes('policy') ||
-    lower.includes('rules') ||
-    lower.includes('nirdesh') ||
-    lower.includes('terms') ||
-    lower.includes('guarantee')
-
-  const isEscalation =
-    lower.includes('human') ||
-    lower.includes('operator') ||
-    lower.includes('manager') ||
-    lower.includes('senior') ||
-    lower.includes('agent se')
-
-  const isAffirmation =
-    lower === 'haan' ||
-    lower === 'ha' ||
-    lower === 'yes' ||
-    lower === 'theek hai' ||
-    lower === 'thik hai' ||
-    lower === 'okay' ||
-    lower === 'ok' ||
-    lower === 'sure' ||
-    lower === 'kar do' ||
-    lower === 'bhej do'
-
-  const isGratitude =
-    lower.includes('thank') ||
-    lower.includes('dhanyawad') ||
-    lower.includes('shukriya') ||
-    lower.includes('bye') ||
-    lower.includes('alvida') ||
-    lower.includes('bas itna')
-
-  // Resolve Intent Hierarchy
-  if (isEscalation) {
-    detectedIntent = 'escalation_requested'
-  } else if (isPaymentMethod && !isDelivery) {
-    detectedIntent = 'refund_payment_method'
-    toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
-  } else if (isRefund) {
-    detectedIntent = 'refund_request'
-    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
-    toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
-  } else if (isCancel) {
-    detectedIntent = 'order_cancellation'
-    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
-  } else if (isAddress) {
-    detectedIntent = 'address_change'
-  } else if (isPaymentFail) {
-    detectedIntent = 'payment_failure_issue'
-  } else if (isPolicy) {
-    detectedIntent = 'policy_inquiry'
-  } else if (isDelivery) {
-    detectedIntent = 'delivery_issue'
-    toolsToCall.push({ tool: 'lookupCustomer', params: { customerId: 'CUS-1042' } })
-    toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
-    toolsToCall.push({ tool: 'getDeliveryStatus', params: { orderId: matchedOrderId } })
-  } else if (isAffirmation) {
-    detectedIntent = 'confirmation_affirm'
-  } else if (isGratitude) {
-    detectedIntent = 'gratitude_closing'
-  } else if (isGreeting) {
-    detectedIntent = 'greeting'
-  } else {
-    detectedIntent = 'general_inquiry'
+    if (geminiResult && geminiResult.success) {
+      detectedIntent = geminiResult.detectedIntent || 'general_inquiry'
+      if (Array.isArray(geminiResult.toolsToCall) && geminiResult.toolsToCall.length > 0) {
+        toolsToCall = geminiResult.toolsToCall
+      }
+      geminiAgentResponse = geminiResult.agentResponse
+      geminiAgentTranslation = geminiResult.agentTranslation
+    }
+  } catch (geminiErr) {
+    console.warn('[Gemini Reasoning] Fallback to deterministic engine:', geminiErr?.message)
   }
 
-  // ── 5. Tool Execution (Controlled Tool Router Entry Point) ───────────────
+  // If Gemini did not populate tools/intent or timed out, apply deterministic fallback classifier
+  if (!toolsToCall || toolsToCall.length === 0) {
+    const lower = customerUtterance.toLowerCase()
+
+    const isGreeting =
+      lower.includes('hello') ||
+      lower.includes('namaste') ||
+      lower.includes('hi') ||
+      lower.includes('hey') ||
+      lower.includes('sun rahe') ||
+      lower.includes('good morning') ||
+      lower.includes('good evening')
+
+    const isDelivery =
+      lower.includes('order') ||
+      lower.includes('din') ||
+      lower.includes('aaya') ||
+      lower.includes('delivery') ||
+      lower.includes('delay') ||
+      lower.includes('late') ||
+      lower.includes('kaha') ||
+      lower.includes('status') ||
+      lower.includes('track')
+
+    const isRefund =
+      lower.includes('refund') ||
+      lower.includes('paisa') ||
+      lower.includes('paise') ||
+      lower.includes('chahiye') ||
+      lower.includes('wapas') ||
+      lower.includes('return')
+
+    const isPaymentMethod =
+      lower.includes('upi') ||
+      lower.includes('bank') ||
+      lower.includes('account') ||
+      lower.includes('original') ||
+      lower.includes('gpay') ||
+      lower.includes('phonepe') ||
+      lower.includes('paytm')
+
+    const isCancel =
+      lower.includes('cancel') ||
+      lower.includes('radd') ||
+      lower.includes('band kar') ||
+      lower.includes('nahi chahiye')
+
+    const isAddress =
+      lower.includes('address') ||
+      lower.includes('pata') ||
+      lower.includes('pin code') ||
+      lower.includes('location') ||
+      lower.includes('change')
+
+    const isPaymentFail =
+      lower.includes('cut gaya') ||
+      lower.includes('deduct') ||
+      lower.includes('fail') ||
+      lower.includes('kat gaye')
+
+    const isPolicy =
+      lower.includes('policy') ||
+      lower.includes('rules') ||
+      lower.includes('nirdesh') ||
+      lower.includes('terms') ||
+      lower.includes('guarantee')
+
+    const isEscalation =
+      lower.includes('human') ||
+      lower.includes('operator') ||
+      lower.includes('manager') ||
+      lower.includes('senior') ||
+      lower.includes('agent se')
+
+    const isAffirmation =
+      lower === 'haan' ||
+      lower === 'ha' ||
+      lower === 'yes' ||
+      lower === 'theek hai' ||
+      lower === 'thik hai' ||
+      lower === 'okay' ||
+      lower === 'ok' ||
+      lower === 'sure' ||
+      lower === 'kar do' ||
+      lower === 'bhej do'
+
+    const isGratitude =
+      lower.includes('thank') ||
+      lower.includes('dhanyawad') ||
+      lower.includes('shukriya') ||
+      lower.includes('bye') ||
+      lower.includes('alvida') ||
+      lower.includes('bas itna')
+
+    if (isEscalation) {
+      detectedIntent = 'escalation_requested'
+    } else if (isPaymentMethod && !isDelivery) {
+      detectedIntent = 'refund_payment_method'
+      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+    } else if (isRefund) {
+      detectedIntent = 'refund_request'
+      toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+    } else if (isCancel) {
+      detectedIntent = 'order_cancellation'
+      toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+    } else if (isAddress) {
+      detectedIntent = 'address_change'
+    } else if (isPaymentFail) {
+      detectedIntent = 'payment_failure_issue'
+    } else if (isPolicy) {
+      detectedIntent = 'policy_inquiry'
+    } else if (isDelivery) {
+      detectedIntent = 'delivery_issue'
+      toolsToCall.push({ tool: 'lookupCustomer', params: { customerId: 'CUS-1042' } })
+      toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
+      toolsToCall.push({ tool: 'getDeliveryStatus', params: { orderId: matchedOrderId } })
+    } else if (isAffirmation) {
+      detectedIntent = 'confirmation_affirm'
+    } else if (isGratitude) {
+      detectedIntent = 'gratitude_closing'
+    } else if (isGreeting) {
+      detectedIntent = 'greeting'
+    } else {
+      detectedIntent = 'general_inquiry'
+    }
+  }
+
+  // ── 6. Tool Execution (Controlled Tool Router Entry Point) ───────────────
   const toolResults = []
 
   for (const call of toolsToCall) {
@@ -332,151 +367,148 @@ export async function processAgentTurn(
     }
   }
 
-  // ── 6. Knowledge Retrieval & Context ─────────────────────────────────────
-  const memoryContext = MemoryService.getFullMemoryContext(caseId, customerUtterance)
-  const policyEvidence = KnowledgeService.retrievePolicyEvidence(customerUtterance, detectedIntent)
-  const customerName = (customerNameOverride || memoryContext.customerMemory?.name || 'Customer').split(' ')[0]
+  // ── 7. Dynamic Response Synthesis Grounded in Context ────────────────────
+  let agentResponseText = geminiAgentResponse
+  let agentTranslation = geminiAgentTranslation
 
-  // ── 7. Dynamic Multi-Branch Response Synthesis Grounded in Context ─────────
-  let agentResponseText = ''
-  let agentTranslation = ''
+  if (!agentResponseText) {
+    if (activeLanguage === 'en-IN') {
+      switch (detectedIntent) {
+        case 'greeting':
+          agentResponseText = `Hello ${customerName}! I'm RELAY. How can I assist you today? Are you inquiring about an existing order or requesting a refund?`
+          break
 
-  if (activeLanguage === 'en-IN') {
-    switch (detectedIntent) {
-      case 'greeting':
-        agentResponseText = `Hello ${customerName}! I'm RELAY. How can I assist you today? Are you inquiring about an existing order or requesting a refund?`
-        break
+        case 'delivery_issue':
+          agentResponseText = `${customerName}, I am checking order #${matchedOrderId}. It has a delivery exception with BlueDart Air and is delayed by 3 days. Would you like me to expedite the shipment, or would you prefer an instant refund of ₹1,499?`
+          break
 
-      case 'delivery_issue':
-        agentResponseText = `${customerName}, I am checking order #${matchedOrderId}. It has a delivery exception with BlueDart Air and is delayed by 3 days. Would you like me to expedite the shipment, or would you prefer an instant refund of ₹1,499?`
-        break
+        case 'refund_request':
+          agentResponseText = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund due to the delivery SLA delay. I have initiated the approval request. Would you like the refund dispatched via instant UPI or to your original payment method?`
+          break
 
-      case 'refund_request':
-        agentResponseText = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund due to the delivery SLA delay. I have initiated the approval request. Would you like the refund dispatched via instant UPI or to your original payment method?`
-        break
+        case 'refund_payment_method':
+          agentResponseText = `Understood ${customerName}, your ₹1,499 refund is queued for instant UPI settlement. Funds will credit within 120 seconds upon supervisor approval. Should I send you an SMS confirmation?`
+          break
 
-      case 'refund_payment_method':
-        agentResponseText = `Understood ${customerName}, your ₹1,499 refund is queued for instant UPI settlement. Funds will credit within 120 seconds upon supervisor approval. Should I send you an SMS confirmation?`
-        break
+        case 'order_cancellation':
+          agentResponseText = `I have initiated the cancellation for order #${matchedOrderId} and halted carrier dispatch. Do you need assistance with anything else?`
+          break
 
-      case 'order_cancellation':
-        agentResponseText = `I have initiated the cancellation for order #${matchedOrderId} and halted carrier dispatch. Do you need assistance with anything else?`
-        break
+        case 'address_change':
+          agentResponseText = `We can update your delivery address while the shipment is at the transit hub. Please provide your new PIN code and delivery address.`
+          break
 
-      case 'address_change':
-        agentResponseText = `We can update your delivery address while the shipment is at the transit hub. Please provide your new PIN code and delivery address.`
-        break
+        case 'payment_failure_issue':
+          agentResponseText = `If funds were deducted without an order confirmation, our payment gateway auto-reverses within 24 hours under NPCI guidelines. I have logged this payment trace for you.`
+          break
 
-      case 'payment_failure_issue':
-        agentResponseText = `If funds were deducted without an order confirmation, our payment gateway auto-reverses within 24 hours under NPCI guidelines. I have logged this payment trace for you.`
-        break
+        case 'policy_inquiry':
+          agentResponseText = `Under our Policy v3.2, carrier delays exceeding 3 days or damaged shipments are eligible for 100% instant refunds with a 7-day hassle-free replacement window. Would you like me to check an order for you?`
+          break
 
-      case 'policy_inquiry':
-        agentResponseText = `Under our Policy v3.2, carrier delays exceeding 3 days or damaged shipments are eligible for 100% instant refunds with a 7-day hassle-free replacement window. Would you like me to check an order for you?`
-        break
+        case 'escalation_requested':
+          agentResponseText = `Certainly ${customerName}, I am transferring you directly to senior operator Maya Sharma right away. Please stay on the line.`
+          break
 
-      case 'escalation_requested':
-        agentResponseText = `Certainly ${customerName}, I am transferring you directly to senior operator Maya Sharma right away. Please stay on the line.`
-        break
+        case 'confirmation_affirm':
+          agentResponseText = `Perfect ${customerName}, I have confirmed your request and forwarded it for instant processing. Is there anything else I can help you with?`
+          break
 
-      case 'confirmation_affirm':
-        agentResponseText = `Perfect ${customerName}, I have confirmed your request and forwarded it for instant processing. Is there anything else I can help you with?`
-        break
+        case 'gratitude_closing':
+          agentResponseText = `It was a pleasure assisting you, ${customerName}! Have a wonderful day and thank you for calling RELAY. Goodbye!`
+          break
 
-      case 'gratitude_closing':
-        agentResponseText = `It was a pleasure assisting you, ${customerName}! Have a wonderful day and thank you for calling RELAY. Goodbye!`
-        break
+        default:
+          agentResponseText = `I'm listening, ${customerName}. You can ask about order status, request a refund, change delivery details, or speak to an operator. What would you like to do?`
+          break
+      }
+    } else {
+      // Hindi / Hinglish Responses with strict Gender Agreement
+      switch (detectedIntent) {
+        case 'greeting':
+          agentResponseText = isMale
+            ? `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakta hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
+            : `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakti hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
+          agentTranslation = `Namaste ${customerName}! How can I help you today? Would you like to check an order status or inquire about a refund?`
+          break
 
-      default:
-        agentResponseText = `I'm listening, ${customerName}. You can ask about order status, request a refund, change delivery details, or speak to an operator. What would you like to do?`
-        break
-    }
-  } else {
-    // Hindi / Hinglish Responses with strict Gender Agreement
-    switch (detectedIntent) {
-      case 'greeting':
-        agentResponseText = isMale
-          ? `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakta hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
-          : `Namaste ${customerName} ji! Main RELAY hoon. Main aapki kya madad kar sakti hoon? Kya aap order status dekhna chahte hain ya refund ke baare mein jaankari chahte hain?`
-        agentTranslation = `Namaste ${customerName}! How can I help you today? Would you like to check an order status or inquire about a refund?`
-        break
+        case 'delivery_issue':
+          agentResponseText = isMale
+            ? `${customerName} ji, main aapka order #${matchedOrderId} check kar raha hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
+            : `${customerName} ji, main aapka order #${matchedOrderId} check kar rahi hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
+          agentTranslation = `${customerName}, I am checking order #${matchedOrderId}... there is a delivery delay exception with BlueDart Air. Would you like me to expedite the shipment or initiate an instant ₹1,499 refund?`
+          break
 
-      case 'delivery_issue':
-        agentResponseText = isMale
-          ? `${customerName} ji, main aapka order #${matchedOrderId} check kar raha hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
-          : `${customerName} ji, main aapka order #${matchedOrderId} check kar rahi hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
-        agentTranslation = `${customerName}, I am checking order #${matchedOrderId}... there is a delivery delay exception with BlueDart Air. Would you like me to expedite the shipment or initiate an instant ₹1,499 refund?`
-        break
+        case 'refund_request':
+          agentResponseText = isMale
+            ? `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
+            : `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
+          agentTranslation = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
+          break
 
-      case 'refund_request':
-        agentResponseText = isMale
-          ? `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
-          : `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
-        agentTranslation = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
-        break
+        case 'refund_payment_method':
+          agentResponseText = isMale
+            ? `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayega. Kya main aapko iska SMS confirmation bhej doon?`
+            : `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayegi. Kya main aapko iska SMS confirmation bhej doon?`
+          agentTranslation = `Understood ${customerName}, your ₹1,499 refund is queued for UPI settlement within 120 seconds of approval. Should I send an SMS confirmation?`
+          break
 
-      case 'refund_payment_method':
-        agentResponseText = isMale
-          ? `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayega. Kya main aapko iska SMS confirmation bhej doon?`
-          : `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayegi. Kya main aapko iska SMS confirmation bhej doon?`
-        agentTranslation = `Understood ${customerName}, your ₹1,499 refund is queued for UPI settlement within 120 seconds of approval. Should I send an SMS confirmation?`
-        break
+        case 'order_cancellation':
+          agentResponseText = isMale
+            ? `Maine order #${matchedOrderId} ke liye cancellation request file kar diya hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
+            : `Maine order #${matchedOrderId} ke liye cancellation request file kar di hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
+          agentTranslation = `I have filed the cancellation request for order #${matchedOrderId}. Do you need help with anything else?`
+          break
 
-      case 'order_cancellation':
-        agentResponseText = isMale
-          ? `Maine order #${matchedOrderId} ke liye cancellation request file kar diya hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
-          : `Maine order #${matchedOrderId} ke liye cancellation request file kar di hai aur courier stop trigger kar diya hai. Kya aapko kisi aur cheez mein sahayata chahiye?`
-        agentTranslation = `I have filed the cancellation request for order #${matchedOrderId}. Do you need help with anything else?`
-        break
+        case 'address_change':
+          agentResponseText = isMale
+            ? `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+            : `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+          agentTranslation = `${customerName}, we can update your delivery address while the shipment is at the hub. Please provide your new PIN code and address.`
+          break
 
-      case 'address_change':
-        agentResponseText = isMale
-          ? `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
-          : `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
-        agentTranslation = `${customerName}, we can update your delivery address while the shipment is at the hub. Please provide your new PIN code and address.`
-        break
+        case 'payment_failure_issue':
+          agentResponseText = isMale
+            ? `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
+            : `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
+          agentTranslation = `If money was deducted without order confirmation, NPCI auto-reversal credits it within 24 hours. I have logged this trace.`
+          break
 
-      case 'payment_failure_issue':
-        agentResponseText = isMale
-          ? `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
-          : `Agar aapke account se paise cut gaye hain aur order create nahi hua, toh NPCI guidelines ke tahat 24 hours mein paise auto-refund ho jate hain. Maine reference note kar liya hai.`
-        agentTranslation = `If money was deducted without order confirmation, NPCI auto-reversal credits it within 24 hours. I have logged this trace.`
-        break
+        case 'policy_inquiry':
+          agentResponseText = isMale
+            ? `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
+            : `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
+          agentTranslation = `Under Policy v3.2, delivery delays (>3 days) or damages qualify for 100% instant refunds with 7-day replacement. Are you inquiring about a specific order?`
+          break
 
-      case 'policy_inquiry':
-        agentResponseText = isMale
-          ? `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
-          : `Hamari Refund Policy v3.2 ke anusaar, delivery delay (>3 din) ya damaged parcel par 100% instant refund milta hai aur 7 days replacement window available hai. Kya aap kisi specific order ke baare mein pooch rahe hain?`
-        agentTranslation = `Under Policy v3.2, delivery delays (>3 days) or damages qualify for 100% instant refunds with 7-day replacement. Are you inquiring about a specific order?`
-        break
+        case 'escalation_requested':
+          agentResponseText = isMale
+            ? `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar raha hoon. Kripya line par bane rahein.`
+            : `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar rahi hoon. Kripya line par bane rahein.`
+          agentTranslation = `Certainly ${customerName}, I am connecting you to senior operator Maya Sharma. Please stay on the line.`
+          break
 
-      case 'escalation_requested':
-        agentResponseText = isMale
-          ? `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar raha hoon. Kripya line par bane rahein.`
-          : `Zaroor ${customerName} ji, main aapko turant senior operator Maya Sharma se connect kar rahi hoon. Kripya line par bane rahein.`
-        agentTranslation = `Certainly ${customerName}, I am connecting you to senior operator Maya Sharma. Please stay on the line.`
-        break
+        case 'confirmation_affirm':
+          agentResponseText = isMale
+            ? `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakta hoon?`
+            : `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakti hoon?`
+          agentTranslation = `Great ${customerName}, I have processed your request. Is there anything else I can help you with?`
+          break
 
-      case 'confirmation_affirm':
-        agentResponseText = isMale
-          ? `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakta hoon?`
-          : `Bahut accha ${customerName} ji, maine aapki request note karke execute kar diya hai. Kya main aapki kisi aur cheez mein sahayata kar sakti hoon?`
-        agentTranslation = `Great ${customerName}, I have processed your request. Is there anything else I can help you with?`
-        break
+        case 'gratitude_closing':
+          agentResponseText = isMale
+            ? `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
+            : `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
+          agentTranslation = `It was my pleasure helping you, ${customerName}! Have a great day and thank you for calling RELAY. Namaste!`
+          break
 
-      case 'gratitude_closing':
-        agentResponseText = isMale
-          ? `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
-          : `Aapki sahayata karke bahut khushi hui ${customerName} ji! Aapka din shubh ho aur RELAY ko call karne ke liye dhanyawad. Namaste!`
-        agentTranslation = `It was my pleasure helping you, ${customerName}! Have a great day and thank you for calling RELAY. Namaste!`
-        break
-
-      default:
-        agentResponseText = isMale
-          ? `Main sun raha hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
-          : `Main sun rahi hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
-        agentTranslation = `I am listening, ${customerName}. You can ask about order tracking, instant refund, address changes, or speaking to an operator. How can I help?`
-        break
+        default:
+          agentResponseText = isMale
+            ? `Main sun raha hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
+            : `Main sun rahi hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
+          agentTranslation = `I am listening, ${customerName}. You can ask about order tracking, instant refund, address changes, or speaking to an operator. How can I help?`
+          break
+      }
     }
   }
 

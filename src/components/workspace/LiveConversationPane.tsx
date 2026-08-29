@@ -12,14 +12,14 @@ import {
   ArrowUpDown,
   Wrench,
   Play,
-  Pause,
   AlertTriangle,
   AlertOctagon,
   Copy,
   Check,
   Loader2,
   Mic,
-  MicOff
+  MicOff,
+  RotateCcw
 } from 'lucide-react'
 
 import { soundEffects } from '../../utils/soundEffects'
@@ -28,6 +28,7 @@ import { agoraRtm } from '../../services/agoraRtmService'
 import { speechService } from '../../services/speechRecognitionService'
 import { useCaseState } from '../../contexts/CaseStateContext'
 import { RelayEvent } from '../../types/relayEvents'
+import { DEMO_SCENARIOS } from '../../data/demoScenarios'
 
 interface LiveConversationPaneProps {
   isHumanTakeover: boolean
@@ -60,8 +61,8 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   onViewCase,
   onStartNewCall,
 }) => {
-  const { caseState, resetCase, clearFailure, runtimeMode } = useCaseState()
-  const [callState, setCallState] = useState<CallState>('CUSTOMER_SPEAKING')
+  const { caseState, resetCase, clearFailure, runtimeMode, activeScenario, loadScenario } = useCaseState()
+  const [callState, setCallState] = useState<CallState>('RELAY_LISTENING')
   const [isAiPaused, setIsAiPaused] = useState<boolean>(false)
   const [isMuted, setIsMuted] = useState<boolean>(false)
   const [showEvaluatorTools, setShowEvaluatorTools] = useState<boolean>(false)
@@ -109,8 +110,13 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   ])
 
   // REAL-TIME SPEECH & FUNCTION CALLING DISPATCHER
+  const isProcessingTurn = useRef<boolean>(false)
+
   const handleProcessSpokenUtterance = async (utterance: string) => {
-    if (!utterance || !utterance.trim()) return
+    if (!utterance || !utterance.trim() || isProcessingTurn.current) return
+    if (speechService.isSpeakingTTS()) return
+
+    isProcessingTurn.current = true
 
     const cleanText = utterance.trim()
     const isHindi =
@@ -187,50 +193,244 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
           setTranscript((prev) => [...prev, agentItem])
 
           // Audible TTS Speech Synthesis through Speakers with strict gender voice matching!
-          speechService.speak(data.agentResponse, data.activeLanguage || 'hi-IN', agentGender)
-        }
-
-        // 4. If approval requested
-        if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
-          setCallState('WAITING_FOR_APPROVAL')
-          setAiWorkingState('Waiting for approval...')
+          speechService.speak(
+            data.agentResponse,
+            data.activeLanguage || 'hi-IN',
+            agentGender,
+            () => {
+              if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
+                setCallState('WAITING_FOR_APPROVAL')
+                setAiWorkingState('Waiting for approval...')
+              } else {
+                setCallState('RELAY_LISTENING')
+                setAiWorkingState('Listening...')
+              }
+              isProcessingTurn.current = false
+            },
+            () => {
+              setCallState('RELAY_SPEAKING')
+            }
+          )
         } else {
-          setCallState('CUSTOMER_SPEAKING')
-          setAiWorkingState('Listening...')
+          if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
+            setCallState('WAITING_FOR_APPROVAL')
+            setAiWorkingState('Waiting for approval...')
+          } else {
+            setCallState('RELAY_LISTENING')
+            setAiWorkingState('Listening...')
+          }
+          isProcessingTurn.current = false
         }
+      } else {
+        isProcessingTurn.current = false
       }
     } catch (err) {
       console.error('[Agent] Turn processing error:', err)
-      setCallState('CUSTOMER_SPEAKING')
+      setCallState('RELAY_LISTENING')
+      setAiWorkingState('Listening...')
+      isProcessingTurn.current = false
+    }
+  }
+
+  // Dynamic Turn-by-Turn Scenario Playback Engine
+  const scenarioTimersRef = useRef<NodeJS.Timeout[]>([])
+  const [isPlayingScenario, setIsPlayingScenario] = useState<boolean>(false)
+
+  const clearScenarioTimers = () => {
+    scenarioTimersRef.current.forEach((t) => clearTimeout(t))
+    scenarioTimersRef.current = []
+    setIsPlayingScenario(false)
+  }
+
+  // Fast skip to fully loaded state
+  const skipToScenarioEnd = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
+    clearScenarioTimers()
+    setTranscript(
+      scenario.transcript.map((item) => ({
+        id: item.id,
+        timestamp: item.timestamp,
+        speaker: item.speaker === 'MAYA' ? 'OPERATOR' : item.speaker === 'CUSTOMER' ? 'CUSTOMER' : 'RELAY',
+        content: item.content,
+        translation: item.translation,
+        language: item.language,
+        isTool: item.isTool,
+        toolName: item.toolName,
+        status: item.status,
+      }))
+    )
+    setCallState(scenario.callState)
+    setCurrentLanguageMode(scenario.language)
+    setIsAiPaused(false)
+    if (scenario.callState === 'WAITING_FOR_APPROVAL') {
+      setAiWorkingState('Waiting for approval...')
+    } else if (scenario.callState === 'TOOL_EXECUTING') {
+      setAiWorkingState('Checking order...')
+    } else if (scenario.callState === 'TOOL_ERROR') {
+      setAiWorkingState('Idle')
+    } else {
       setAiWorkingState('Listening...')
     }
   }
 
-  // Reset clean conversation transcript and state whenever active case changes
-  useEffect(() => {
-    setTranscript([
-      {
-        id: `greeting-${Date.now()}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-        speaker: 'RELAY',
-        content: '"Hi, I\'m RELAY. How can I help you today?"',
-        translation:
-          agentGender === 'male'
-            ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
-            : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
-        language: 'English / Hindi',
-      },
-    ])
-    setCallState('CUSTOMER_SPEAKING')
+  const playScenarioTurnByTurn = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
+    clearScenarioTimers()
+    setIsPlayingScenario(true)
+
+    // 1. Initial greeting
+    const greetingItem: TranscriptItem = {
+      id: `greeting-${Date.now()}`,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      speaker: 'RELAY',
+      content: '"Hi, I\'m RELAY. How can I help you today?"',
+      translation:
+        agentGender === 'male'
+          ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
+          : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
+      language: 'English / Hindi',
+    }
+
+    setTranscript([greetingItem])
+    setCallState('RELAY_LISTENING')
+    setAiWorkingState('Listening...')
+    setCurrentLanguageMode(scenario.language)
     setIsAiPaused(false)
-  }, [caseState.id, agentGender])
+
+    let accumulatedDelay = 700 // initial customer speak offset
+
+    scenario.transcript.forEach((item) => {
+      const isCustomer = item.speaker === 'CUSTOMER'
+      const isTool = item.isTool
+      const isRelay = item.speaker === 'RELAY' && !item.isTool
+      const isOperator = item.speaker === 'MAYA'
+
+      // Schedule turn
+      const timer = setTimeout(() => {
+        const mappedItem: TranscriptItem = {
+          id: `${item.id}-${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: isOperator ? 'OPERATOR' : isCustomer ? 'CUSTOMER' : 'RELAY',
+          content: item.content,
+          translation: item.translation,
+          language: item.language,
+          isTool: item.isTool,
+          toolName: item.toolName,
+          status: item.status,
+        }
+
+        setTranscript((prev) => [...prev, mappedItem])
+
+        if (isCustomer) {
+          setCallState('CUSTOMER_SPEAKING')
+          setAiWorkingState('Listening...')
+        } else if (isTool) {
+          setCallState('TOOL_EXECUTING')
+          setAiWorkingState('Checking order...')
+          try {
+            soundEffects.playToolExecuted()
+          } catch (e) {}
+        } else if (isRelay) {
+          setCallState('RELAY_SPEAKING')
+          setAiWorkingState('Executing action...')
+          const cleanText = item.content.replace(/^"|"$/g, '')
+          const lang = item.language?.toLowerCase().includes('hindi') ? 'hi-IN' : 'en-IN'
+          try {
+            speechService.speak(
+              cleanText,
+              lang,
+              agentGender,
+              () => {
+                setCallState('RELAY_LISTENING')
+                setAiWorkingState('Listening...')
+              },
+              () => {
+                setCallState('RELAY_SPEAKING')
+              }
+            )
+          } catch (e) {}
+        } else if (isOperator) {
+          setCallState('HUMAN_ACTIVE')
+          setAiWorkingState('Listening...')
+          try {
+            soundEffects.playHumanTakeover()
+          } catch (e) {}
+        }
+      }, accumulatedDelay)
+
+      scenarioTimersRef.current.push(timer)
+
+      // Add realistic duration for each turn
+      if (isCustomer) {
+        accumulatedDelay += 1800
+      } else if (isTool) {
+        accumulatedDelay += 1100
+      } else if (isRelay) {
+        accumulatedDelay += 2400
+      } else {
+        accumulatedDelay += 1800
+      }
+    })
+
+    // End of scenario lifecycle transition
+    const finalTimer = setTimeout(() => {
+      setCallState(scenario.callState)
+      setIsPlayingScenario(false)
+
+      if (scenario.callState === 'WAITING_FOR_APPROVAL') {
+        setAiWorkingState('Waiting for approval...')
+        try {
+          soundEffects.playApprovalRequested()
+        } catch (e) {}
+      } else if (scenario.callState === 'HUMAN_ACTIVE') {
+        setAiWorkingState('Listening...')
+        try {
+          soundEffects.playHumanTakeover()
+        } catch (e) {}
+      } else if (scenario.callState === 'TOOL_ERROR') {
+        setAiWorkingState('Idle')
+      } else {
+        setAiWorkingState('Listening...')
+      }
+    }, accumulatedDelay + 400)
+
+    scenarioTimersRef.current.push(finalTimer)
+  }
+
+  // Play turn-by-turn animation whenever activeScenario changes
+  useEffect(() => {
+    if (activeScenario && activeScenario.caseId === caseState.id && activeScenario.transcript.length > 0) {
+      playScenarioTurnByTurn(activeScenario)
+    } else {
+      clearScenarioTimers()
+      setTranscript([
+        {
+          id: `greeting-${Date.now()}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: '"Hi, I\'m RELAY. How can I help you today?"',
+          translation:
+            agentGender === 'male'
+              ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
+              : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
+          language: 'English / Hindi',
+        },
+      ])
+      setCallState('RELAY_LISTENING')
+      setIsAiPaused(false)
+      setAiWorkingState('Listening...')
+    }
+
+    return () => {
+      clearScenarioTimers()
+    }
+  }, [activeScenario, caseState.id, agentGender])
 
   // Listen for Operator Approval in Case State and immediately resolve WAITING_FOR_APPROVAL
-  const hasAnnouncedApproval = useRef<boolean>(false)
+  const lastAnnouncedActionKey = useRef<string | null>(null)
   useEffect(() => {
     if (caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved') {
-      if (hasAnnouncedApproval.current) return
-      hasAnnouncedApproval.current = true
+      const actionKey = `${caseState.id}-${caseState.activeAction?.id || 'approved'}`
+      if (lastAnnouncedActionKey.current === actionKey) return
+      lastAnnouncedActionKey.current = actionKey
 
       setCallState('RELAY_SPEAKING')
       setAiWorkingState('Executing action...')
@@ -239,15 +439,18 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
       } catch (e) {}
 
       const isEn = currentLanguageMode.includes('English')
+      const actionTitle = caseState.activeAction?.title || 'Action'
+      const amountStr = caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : ''
+      
       const approvedMsg = isEn
-        ? 'Supervisor Maya Sharma has approved your ₹1,499 instant refund. The funds will be credited to your UPI account within 120 seconds.'
+        ? `Supervisor Maya Sharma has approved the ${actionTitle} ${amountStr ? `of ${amountStr}` : ''}. The resolution has been committed successfully.`
         : agentGender === 'male'
-        ? 'Supervisor ne ₹1,499 refund approve kar diya hai. Paise 120 seconds mein aapke UPI account par credit ho jayenge.'
-        : 'Supervisor ne ₹1,499 refund approve kar di hai. Paise 120 seconds mein aapke UPI account par credit ho jayenge.'
+        ? `Supervisor ne ${actionTitle} ${amountStr ? `${amountStr}` : ''} approve kar diya hai. Action process ho gaya hai.`
+        : `Supervisor ne ${actionTitle} ${amountStr ? `${amountStr}` : ''} approve kar di hai. Action process ho gaya hai.`
 
       const approvedTranslation = isEn
         ? undefined
-        : 'Supervisor has approved the ₹1,499 refund. Funds will credit to your account within 120 seconds.'
+        : `Supervisor has approved ${actionTitle}. Action executed.`
 
       setTranscript((prev) => [
         ...prev,
@@ -261,29 +464,58 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         },
       ])
 
-      speechService.speak(approvedMsg, isEn ? 'en-IN' : 'hi-IN', agentGender)
-
-      setTimeout(() => {
-        setCallState('CUSTOMER_SPEAKING')
-        setAiWorkingState('Listening...')
-      }, 4000)
-    } else {
-      hasAnnouncedApproval.current = false
+      speechService.speak(
+        approvedMsg,
+        isEn ? 'en-IN' : 'hi-IN',
+        agentGender,
+        () => {
+          setCallState('RELAY_LISTENING')
+          setAiWorkingState('Listening...')
+        },
+        () => {
+          setCallState('RELAY_SPEAKING')
+        }
+      )
     }
-  }, [caseState.activeAction?.status, caseState.status, agentGender, currentLanguageMode])
+  }, [caseState.activeAction?.status, caseState.activeAction?.id, caseState.status, caseState.id, agentGender, currentLanguageMode])
 
-  // Continuous Speech Recognition (ASR) Listener
+  // Continuous Speech Recognition (ASR) Listener + Active Speaking Detector
   useEffect(() => {
     speechService.startListening()
 
     const unsubSpeech = speechService.subscribe((payload) => {
       if (payload.isFinal && payload.text) {
+        // Prevent feedback loop: strictly ignore microphone when RELAY is synthesizing speech, playing scenario, or in tool execution
+        if (speechService.isSpeakingTTS() || isPlayingScenario) {
+          return
+        }
         handleProcessSpokenUtterance(payload.text)
+      }
+    })
+
+    const unsubSpeaking = speechService.subscribeSpeaking((isSpeaking) => {
+      if (isSpeaking) {
+        setCallState((curr) => {
+          if (
+            curr === 'HUMAN_ACTIVE' ||
+            curr === 'HUMAN_TAKEOVER' ||
+            curr === 'RECONNECTING' ||
+            curr === 'CALL_ENDED' ||
+            curr === 'TOOL_EXECUTING' ||
+            curr === 'WAITING_FOR_APPROVAL'
+          ) {
+            return curr
+          }
+          return 'CUSTOMER_SPEAKING'
+        })
+      } else {
+        setCallState((curr) => (curr === 'CUSTOMER_SPEAKING' ? 'RELAY_LISTENING' : curr))
       }
     })
 
     return () => {
       unsubSpeech()
+      unsubSpeaking()
       speechService.stopListening()
     }
   }, [caseState.id])
@@ -340,7 +572,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     const unsubInterruption = agoraRtc.subscribeInterruption(() => {
       setCallState('CUSTOMER_INTERRUPTED')
       setTimeout(() => {
-        setCallState('CUSTOMER_SPEAKING')
+        setCallState('RELAY_LISTENING')
       }, 2800)
     })
 
@@ -359,7 +591,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
       agoraRtc.setHumanTakeover(true)
       soundEffects.playHumanTakeover()
     } else if (callState === 'HUMAN_ACTIVE' || callState === 'HUMAN_TAKEOVER') {
-      setCallState('CUSTOMER_SPEAKING')
+      setCallState('RELAY_LISTENING')
       agoraRtc.setHumanTakeover(false)
     }
   }, [isHumanTakeover])
@@ -374,7 +606,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         soundEffects.playCallConnected()
       }, 1600)
       const t3 = setTimeout(() => {
-        setCallState('CUSTOMER_SPEAKING')
+        setCallState('RELAY_LISTENING')
       }, 3400)
 
       return () => {
@@ -393,9 +625,23 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
   // Autonomous AI Agent ↔ Tool Calling Loop
   const handleRunWowDemo = async () => {
+    const sc = activeScenario || DEMO_SCENARIOS[0]
     setCallState('CUSTOMER_SPEAKING')
     setIsAiPaused(false)
     setAiWorkingState('Listening...')
+
+    const defaultUtterance =
+      sc.id === 'payment-failure'
+        ? 'My bank account was debited twice for ₹2,499.'
+        : sc.id === 'language-switch'
+        ? 'Bhaiya actually main Gurgaon mein nahi hoon, mujhe Noida Sector 62 bhejna hai.'
+        : sc.id === 'human-takeover'
+        ? 'I want to talk to a human supervisor right now.'
+        : sc.id === 'tool-failure'
+        ? 'Mera package track nahi ho raha hai, error aa raha hai.'
+        : sc.id === 'angry-customer'
+        ? 'Yeh teesri baar hai jab tumhari service ne mera time waste kiya hai!'
+        : 'Mera order 5 din se nahi aaya.'
 
     try {
       setAiWorkingState('Understanding...')
@@ -403,8 +649,8 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          utterance: 'Mera order 5 din se nahi aaya.',
-          caseId: caseState.id || 'RLY-1042',
+          utterance: defaultUtterance,
+          caseId: caseState.id || sc.caseId,
         }),
       })
 
@@ -418,8 +664,8 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
         // 2. Autonomous Tool Invocation decisions
         setTimeout(() => {
-          setCallState('TOOL_EXECUTING')
-          setAiWorkingState('Checking order...')
+          setCallState(sc.callState === 'TOOL_ERROR' ? 'TOOL_ERROR' : 'TOOL_EXECUTING')
+          setAiWorkingState(sc.callState === 'TOOL_ERROR' ? 'Idle' : 'Checking order...')
           soundEffects.playToolExecuted()
 
           const toolCompletedEvent = data.events?.find((e: any) => e.type === 'tool.completed')
@@ -430,9 +676,14 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
         // 3. Approval created event
         setTimeout(() => {
-          setCallState('WAITING_FOR_APPROVAL')
-          setAiWorkingState('Waiting for approval...')
-          soundEffects.playApprovalRequested()
+          setCallState(sc.callState)
+          if (sc.callState === 'WAITING_FOR_APPROVAL') {
+            setAiWorkingState('Waiting for approval...')
+            soundEffects.playApprovalRequested()
+          } else if (sc.callState === 'HUMAN_ACTIVE') {
+            setAiWorkingState('Listening...')
+            soundEffects.playHumanTakeover()
+          }
 
           const approvalEvent = data.events?.find((e: any) => e.type === 'approval.created')
           if (approvalEvent) {
@@ -456,9 +707,9 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     agoraRtm.publishRelayEvent({
       type: 'speech.transcript',
       speaker: 'customer',
-      text: 'Mera order 5 din se nahi aaya.',
-      translation: "My order hasn't arrived for 5 days.",
-      language: 'Hindi',
+      text: defaultUtterance,
+      translation: sc.language.includes('Hindi') ? "My order hasn't arrived for 5 days." : undefined,
+      language: sc.language,
       timestamp: new Date().toLocaleTimeString(),
     })
   }
@@ -529,7 +780,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     setTimeout(() => {
       setCaseStatus('created')
       resetCase('RLY-1043')
-      setCallState('CUSTOMER_SPEAKING')
+      setCallState('RELAY_LISTENING')
       soundEffects.playCallConnected()
 
       agoraRtm.publishEvent('TRANSCRIPT', {
@@ -544,7 +795,6 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
   const isBargeIn = callState === 'CUSTOMER_INTERRUPTED'
   const isOperator = callState === 'HUMAN_ACTIVE' || callState === 'HUMAN_TAKEOVER'
-  const isFailure = meta.category === 'failure'
 
   const currentCustomerName = caseState.customerName || 'Aarav Sharma'
   const currentCustomerInitials =
@@ -572,108 +822,87 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-canvas overflow-hidden">
-      {/* 5-STEP HERO DEMO PIPELINE: DOMINANT FIRST 10-SECOND CLARITY */}
-      <div className="bg-canvas-pure border-b border-border-subtle p-2 px-3 flex flex-wrap items-center justify-between gap-2 shrink-0 select-none font-mono text-xs">
-        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-          <span className="text-[10px] font-bold text-ink-muted uppercase tracking-wider hidden lg:inline">
-            CORE PIPELINE:
+      {/* 1. ULTRA-COMPACT UNIFIED TOP BAR: CASE INFO + 5-STEP PIPELINE + LANGUAGE & EVALUATOR TOOLS */}
+      <div className="bg-canvas-pure border-b border-border-subtle px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 select-none font-mono text-xs">
+        {/* Left: Case ID & Intent */}
+        <div className="flex items-center gap-2 min-w-0">
+          {caseStatus === 'creating' ? (
+            <div className="flex items-center gap-1.5 text-ops-warning font-bold animate-pulse text-[11px]">
+              <Loader2 className="w-3 h-3 animate-spin text-ops-warning" />
+              <span>Creating...</span>
+            </div>
+          ) : (
+            <div className="flex items-baseline gap-1">
+              <span className="font-sans text-[10px] font-semibold text-ink-muted uppercase">CASE</span>
+              <span className="font-bold text-xs text-ink-primary font-mono tracking-tight">#{caseState.id}</span>
+            </div>
+          )}
+
+          <span className="text-border text-xs">/</span>
+          <span className="text-xs font-medium text-ink-primary truncate max-w-[140px] sm:max-w-[220px]">
+            {caseStatus === 'creating' ? 'Provisioning...' : caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Customer Support'}
           </span>
-
-          {/* STEP 1 */}
-          <div
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-[3px] border transition-all ${
-              currentStepNum === 1
-                ? 'bg-accent text-white border-accent font-bold shadow-xs'
-                : currentStepNum > 1
-                ? 'bg-canvas-subtle text-ink-primary border-border-subtle'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-70'
-            }`}
-          >
-            <span className="text-[10px]">1.</span>
-            <span>CUSTOMER SPEAKS</span>
-          </div>
-
-          <span className="text-ink-muted">→</span>
-
-          {/* STEP 2 */}
-          <div
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-[3px] border transition-all ${
-              currentStepNum === 2
-                ? 'bg-accent text-white border-accent font-bold shadow-xs'
-                : currentStepNum > 2
-                ? 'bg-canvas-subtle text-ink-primary border-border-subtle'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-70'
-            }`}
-          >
-            <span className="text-[10px]">2.</span>
-            <span>RELAY UNDERSTANDS</span>
-          </div>
-
-          <span className="text-ink-muted">→</span>
-
-          {/* STEP 3 */}
-          <div
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-[3px] border transition-all ${
-              currentStepNum === 3
-                ? 'bg-ops-warningBg text-ops-warning border-ops-warningBorder font-bold shadow-xs'
-                : currentStepNum > 3
-                ? 'bg-canvas-subtle text-ink-primary border-border-subtle'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-70'
-            }`}
-          >
-            <span className="text-[10px]">3.</span>
-            <span>RELAY ACTS</span>
-          </div>
-
-          <span className="text-ink-muted">→</span>
-
-          {/* STEP 4 */}
-          <div
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-[3px] border transition-all ${
-              currentStepNum === 4
-                ? 'bg-ops-warningBg text-ops-warning border-ops-warningBorder font-bold shadow-xs animate-pulse'
-                : currentStepNum > 4
-                ? 'bg-canvas-subtle text-ink-primary border-border-subtle'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-70'
-            }`}
-          >
-            <span className="text-[10px]">4.</span>
-            <span>HUMAN APPROVES</span>
-          </div>
-
-          <span className="text-ink-muted">→</span>
-
-          {/* STEP 5 */}
-          <div
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-[3px] border transition-all ${
-              currentStepNum === 5
-                ? 'bg-ops-liveBg text-ops-live border-ops-liveBorder font-bold shadow-xs'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-70'
-            }`}
-          >
-            <span className="text-[10px]">5.</span>
-            <span>ACTION COMPLETES</span>
-          </div>
+          <span className="text-[10px] text-ink-muted hidden md:inline">• SIP_04</span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        {/* Center: Slim 5-Step Pipeline Chips */}
+        <div className="hidden lg:flex items-center gap-1 text-[10px]">
+          {[
+            { num: 1, label: 'SPEAKS' },
+            { num: 2, label: 'UNDERSTANDS' },
+            { num: 3, label: 'ACTS' },
+            { num: 4, label: 'APPROVES' },
+            { num: 5, label: 'COMPLETES' },
+          ].map((step, idx) => (
+            <React.Fragment key={step.num}>
+              {idx > 0 && <span className="text-ink-muted text-[9px]">→</span>}
+              <div
+                className={`px-1.5 py-0.2 rounded-[2px] border transition-all ${
+                  currentStepNum === step.num
+                    ? 'bg-accent text-white border-accent font-bold shadow-xs'
+                    : currentStepNum > step.num
+                    ? 'bg-canvas-subtle text-ink-primary border-border-subtle font-medium'
+                    : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-60'
+                }`}
+              >
+                <span>{step.num}. {step.label}</span>
+              </div>
+            </React.Fragment>
+          ))}
+        </div>
+
+        {/* Right: Language Pill, Status Badge & Tools Toggle */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1 text-[10px] bg-canvas-subtle border border-border-subtle px-2 py-0.5 rounded-[3px] text-ink-secondary">
+            <Languages className="w-2.5 h-2.5 text-ink-muted" />
+            <span>{currentLanguageMode}</span>
+          </div>
+
+          {isAiPaused ? (
+            <Badge variant="warning" dot size="xs" className="font-mono">RELAY PAUSED</Badge>
+          ) : (
+            <Badge variant={meta.badgeVariant} dot size="xs" className="font-mono">
+              {meta.topBarBadge.replace('● ', '')}
+            </Badge>
+          )}
+
           <button
             type="button"
             onClick={() => setShowEvaluatorTools((prev) => !prev)}
-            className={`font-mono text-[10px] px-2 py-0.5 rounded-[3px] border transition-colors cursor-pointer flex items-center gap-1 ${
+            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-[3px] border transition-colors cursor-pointer flex items-center gap-1 ${
               showEvaluatorTools || runtimeMode === 'DEMO'
                 ? 'bg-canvas-muted text-ink-primary border-border-strong font-bold'
                 : 'bg-canvas-subtle text-ink-muted border-border-subtle hover:text-ink-primary'
             }`}
             title="Toggle Evaluator State Simulator & Demo Tools"
           >
-            <span>⚡ Evaluator Tools</span>
-            <span className="text-[9px] opacity-70">{showEvaluatorTools ? '▲' : '▼'}</span>
+            <span>⚡ Tools</span>
+            <span className="text-[8px] opacity-70">{showEvaluatorTools ? '▲' : '▼'}</span>
           </button>
         </div>
       </div>
 
-      {/* EVALUATOR TOOLS & STATE SIMULATOR BAR (SECONDARY) */}
+      {/* EVALUATOR TOOLS & STATE SIMULATOR BAR (CONDITIONAL) */}
       {(showEvaluatorTools || runtimeMode === 'DEMO') && (
         <div className="bg-canvas-subtle border-b border-border-subtle p-2 px-3 flex flex-col gap-2 shrink-0 select-none animate-in fade-in duration-150">
           <div className="flex items-center justify-between gap-2">
@@ -709,6 +938,54 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             </span>
           </div>
 
+          {/* 6 SCENARIOS QUICK BUTTON STRIP & PLAYBACK CONTROLS */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 border-t border-border-subtle/60 pt-1.5">
+            <span className="text-[9px] font-mono font-bold text-accent uppercase tracking-wider shrink-0">
+              ⚡ SCENARIOS:
+            </span>
+            {DEMO_SCENARIOS.map((sc, idx) => (
+              <button
+                key={sc.id}
+                type="button"
+                onClick={() => loadScenario(sc)}
+                className={`px-2 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase transition-all whitespace-nowrap cursor-pointer flex items-center gap-1 shrink-0 ${
+                  activeScenario?.id === sc.id
+                    ? 'bg-accent text-white shadow-xs'
+                    : 'bg-canvas-pure text-ink-primary border border-border-subtle hover:border-accent hover:text-accent'
+                }`}
+                title={`${sc.title}: ${sc.description}`}
+              >
+                <span className="opacity-70">{idx + 1}.</span>
+                <span>{sc.title}</span>
+              </button>
+            ))}
+
+            {activeScenario && (
+              <div className="flex items-center gap-1 ml-auto shrink-0 pl-2 border-l border-border-subtle">
+                <button
+                  type="button"
+                  onClick={() => playScenarioTurnByTurn(activeScenario)}
+                  className="px-1.5 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase bg-canvas-pure text-ink-primary border border-border-subtle hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+                  title="Replay this scenario turn-by-turn"
+                >
+                  <RotateCcw className="w-2.5 h-2.5" />
+                  <span>REPLAY</span>
+                </button>
+
+                {isPlayingScenario && (
+                  <button
+                    type="button"
+                    onClick={() => skipToScenarioEnd(activeScenario)}
+                    className="px-1.5 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase bg-canvas-pure text-ops-warning border border-ops-warningBorder hover:bg-ops-warningBg cursor-pointer flex items-center gap-1 animate-pulse"
+                    title="Skip turn-by-turn animation and show all messages immediately"
+                  >
+                    <span>⏭ SKIP TO END</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <CallStateSimulator
             currentState={callState}
             onSelectState={(st) => setCallState(st)}
@@ -716,10 +993,10 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
       )}
 
-      {/* FAILURE STATE BANNER — renders when an active failure is in progress */}
+      {/* FAILURE STATE BANNER */}
       {caseState.activeFailure && (
         <div
-          className={`flex items-center justify-between gap-3 px-3 py-2 border-b font-mono text-xs shrink-0 animate-in slide-in-from-top duration-200 ${
+          className={`flex items-center justify-between gap-3 px-3 py-1.5 border-b font-mono text-xs shrink-0 animate-in slide-in-from-top duration-200 ${
             caseState.activeFailure.escalate
               ? 'bg-ops-criticalBg border-ops-criticalBorder text-ops-critical'
               : 'bg-ops-warningBg border-ops-warningBorder text-ops-warning'
@@ -728,183 +1005,45 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             <div>
-              <span className="font-bold uppercase tracking-wider">
-                {caseState.activeFailure.state}
-              </span>
+              <span className="font-bold uppercase tracking-wider">{caseState.activeFailure.state}</span>
               <span className="mx-1.5 text-border">·</span>
               <span>{caseState.activeFailure.message}</span>
-              {caseState.activeFailure.attempt !== undefined && (
-                <span className="ml-2 opacity-70">
-                  ({caseState.activeFailure.attempt}/{caseState.activeFailure.maxAttempts})
-                </span>
-              )}
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {caseState.activeFailure.recovery?.userMessage && (
-              <span className="text-[10px] opacity-70 hidden lg:block max-w-[200px] truncate">
-                {caseState.activeFailure.recovery.userMessage}
-              </span>
-            )}
-            {caseState.activeFailure.escalate && (
-              <span className="text-[10px] font-bold bg-ops-critical/20 border border-ops-criticalBorder px-1.5 py-0.5 rounded uppercase tracking-wider">
-                ESCALATING
-              </span>
-            )}
-            <button
-              onClick={clearFailure}
-              className="text-[10px] font-bold opacity-70 hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded border border-current"
-            >
-              DISMISS
-            </button>
-          </div>
+          <button
+            onClick={clearFailure}
+            className="text-[10px] font-bold opacity-70 hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded border border-current"
+          >
+            DISMISS
+          </button>
         </div>
       )}
 
-      {/* 1. CONVERSATION HEADER & SECTION 34 AUTOMATIC CASE CREATION */}
-      <div className="bg-canvas-pure border-b border-border-subtle p-3 shrink-0 select-none">
-        <div className="flex items-start justify-between">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              {caseStatus === 'creating' ? (
-                <div className="flex items-center gap-1.5 font-mono text-xs text-ops-warning font-bold animate-pulse">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-ops-warning" />
-                  <span>Creating case...</span>
-                </div>
-              ) : (
-                <div className="flex items-baseline gap-1">
-                  <span className="font-sans text-[11px] font-semibold text-ink-muted uppercase tracking-wider">
-                    CASE
-                  </span>
-                  <span className="font-mono text-xs font-bold text-ink-primary tracking-tight">
-                    #{caseState.id}
-                  </span>
-                </div>
-              )}
-
-              <span className="text-border text-xs">/</span>
-              <span className="font-sans text-xs font-medium text-ink-primary">
-                {caseStatus === 'creating'
-                  ? 'Provisioning CRM record...'
-                  : caseState.intent
-                  ? caseState.intent.replace(/_/g, ' ')
-                  : 'Customer Support Inbound'}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2 text-[10px] font-mono text-ink-muted">
-              <span>{caseStatus === 'creating' ? 'Allocating session...' : 'Opened 4m ago'}</span>
-              <span>•</span>
-              <span className="text-ink-secondary">Trunk: SIP_INBOUND_04</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 font-mono text-[10px] bg-canvas-subtle border border-border-subtle px-2.5 py-0.5 rounded-[3px] text-ink-secondary">
-              <Languages className="w-3 h-3 text-ink-muted" />
-              <span>{currentLanguageMode}</span>
-            </div>
-
-            {isAiPaused ? (
-              <Badge variant="warning" dot size="xs" className="font-mono">
-                RELAY PAUSED
-              </Badge>
-            ) : (
-              <Badge variant={meta.badgeVariant} dot size="xs" className="font-mono">
-                {meta.topBarBadge.replace('● ', '')}
-              </Badge>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* SECTION 40: RECONNECTION STATE BANNER & CARDS */}
+      {/* RECONNECTION STATE BANNER */}
       {callState === 'RECONNECTING' && (
-        <div className="bg-ops-warningBg border-b border-ops-warningBorder p-3 flex items-center justify-between font-mono text-xs text-ops-warning select-none">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2 font-bold text-xs tracking-tight uppercase">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>RECONNECTING</span>
-            </div>
-            <p className="text-[11px] text-ink-primary font-sans">
-              Agora connection interrupted.
-            </p>
+        <div className="bg-ops-warningBg border-b border-ops-warningBorder px-3 py-1.5 flex items-center justify-between font-mono text-xs text-ops-warning select-none">
+          <div className="flex items-center gap-2 font-bold text-xs tracking-tight uppercase">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <span>RECONNECTING AGORA AUDIO STREAM...</span>
           </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => openProofInspector({
-                timestamp: '21:34:00',
-                eventType: 'connection.interrupted',
-                title: 'Agora WebRTC Channel Disruption',
-                source: 'Agora RTC Native Client',
-                confidence: 1.0,
-                payload: {
-                  channel: 'relay-case-1042',
-                  reason: 'NETWORK_ICE_DISCONNECTED',
-                  attempt: reconnectAttempt,
-                  maxAttempts: 5,
-                  rtt_before_drop_ms: 86
-                }
-              })}
-              className="text-[10px] font-mono font-bold text-ops-warning bg-canvas-pure border border-ops-warningBorder px-2 py-0.5 rounded hover:bg-ops-warningBg cursor-pointer"
-            >
-              [ VIEW EVENT ]
-            </button>
-
-            <div className="text-right">
-              <span className="font-bold text-xs tabular-nums block">
-                Attempt {reconnectAttempt} / 5
-              </span>
-              <span className="text-[9px] text-ink-muted">
-                Auto-negotiating ICE candidate
-              </span>
-            </div>
-          </div>
+          <span className="font-bold text-xs tabular-nums">Attempt {reconnectAttempt} / 5</span>
         </div>
       )}
 
       {callState === 'CONNECTION_RESTORED' && (
-        <div className="bg-ops-liveBg border-b border-ops-liveBorder p-2.5 px-3 flex items-center justify-between font-mono text-xs text-ops-live select-none animate-in fade-in duration-150">
+        <div className="bg-ops-liveBg border-b border-ops-liveBorder px-3 py-1 flex items-center justify-between font-mono text-xs text-ops-live select-none animate-in fade-in duration-150">
           <div className="flex items-center gap-2 font-bold">
             <Check className="w-3.5 h-3.5 stroke-[3]" />
-            <span>✓ CONNECTION RESTORED</span>
-            <span className="text-border">/</span>
-            <span className="text-ink-secondary text-[11px] font-normal">
-              Stable audio stream re-locked on relay-case-1042
-            </span>
+            <span>✓ WEBRTC AUDIO RESTORED</span>
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => openProofInspector({
-                timestamp: '21:34:02',
-                eventType: 'connection.restored',
-                title: 'Agora WebRTC ICE Channel Re-established',
-                source: 'Agora RTC Native Client',
-                confidence: 1.0,
-                payload: {
-                  channel: 'relay-case-1042',
-                  ice_state: 'CONNECTED',
-                  reconnect_time_ms: 1240,
-                  packet_loss: '0.00%',
-                  rtt_ms: 86
-                }
-              })}
-              className="text-[10px] font-mono font-bold text-ops-live bg-canvas-pure border border-ops-liveBorder px-2 py-0.5 rounded hover:bg-ops-liveBg cursor-pointer"
-            >
-              [ VIEW EVENT ]
-            </button>
-            <span className="text-[10px] text-ink-muted font-mono">Channel Synced</span>
-          </div>
+          <span className="text-[10px] text-ink-muted">Channel Synced</span>
         </div>
       )}
 
-      {/* SECTION 33: END-OF-CALL SUMMARY MODAL/CARD */}
+      {/* 2. SECTION 33: END-OF-CALL SUMMARY CARD */}
       {callState === 'CALL_ENDED' ? (
         <div className="flex-1 flex items-center justify-center p-6 bg-canvas-subtle overflow-y-auto">
           <div className="w-full max-w-md bg-canvas-pure border border-border-subtle rounded-[6px] p-6 shadow-hairline space-y-5 font-sans animate-in fade-in duration-200">
-            {/* Header: CALL COMPLETE + Duration */}
             <div className="flex items-start justify-between pb-3 border-b border-border-subtle">
               <div>
                 <div className="flex items-center gap-2">
@@ -913,85 +1052,34 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                     CALL COMPLETE
                   </h2>
                 </div>
-                <p className="font-mono text-xs text-ink-muted mt-0.5 tabular-nums">
-                  02:41 duration
-                </p>
+                <p className="font-mono text-xs text-ink-muted mt-0.5 tabular-nums">02:41 duration</p>
               </div>
-              <Badge variant="live" size="xs" className="font-mono">
-                ARCHIVED
-              </Badge>
+              <Badge variant="live" size="xs" className="font-mono">ARCHIVED</Badge>
             </div>
 
-            {/* Structured Metric Grid */}
             <div className="space-y-3 font-mono text-xs">
               <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                  ISSUE
-                </span>
-                <span className="text-sm font-bold text-ink-primary block font-sans">
-                  Delivery dispute
-                </span>
+                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">ISSUE</span>
+                <span className="text-sm font-bold text-ink-primary block font-sans">Delivery dispute</span>
               </div>
-
               <div className="h-px bg-border-subtle/70" />
-
               <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                  RESOLUTION
-                </span>
-                <span className="text-xs font-bold text-ops-live block">
-                  Refund initiated
-                </span>
+                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">RESOLUTION</span>
+                <span className="text-xs font-bold text-ops-live block">Refund initiated</span>
               </div>
-
               <div className="h-px bg-border-subtle/70" />
-
-              <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                  CUSTOMER LANGUAGE
-                </span>
-                <span className="text-xs font-semibold text-ink-primary block">
-                  Hindi
-                </span>
-              </div>
-
-              <div className="h-px bg-border-subtle/70" />
-
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                    TOOLS USED
-                  </span>
-                  <span className="text-sm font-bold text-ink-primary block tabular-nums">
-                    4
-                  </span>
+                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">TOOLS USED</span>
+                  <span className="text-sm font-bold text-ink-primary block tabular-nums">4</span>
                 </div>
-
                 <div>
-                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                    HUMAN INTERVENTION
-                  </span>
-                  <span className="text-sm font-bold text-ink-primary block tabular-nums">
-                    1
-                  </span>
-                </div>
-              </div>
-
-              <div className="h-px bg-border-subtle/70" />
-
-              <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">
-                  CUSTOMER SENTIMENT
-                </span>
-                <div className="flex items-center gap-2 mt-0.5 font-sans">
-                  <span className="text-xs font-semibold text-ops-warning">Frustrated</span>
-                  <span className="text-ink-muted text-xs">→</span>
-                  <span className="text-xs font-semibold text-ops-live">Neutral</span>
+                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">HUMAN INTERVENTION</span>
+                  <span className="text-sm font-bold text-ink-primary block tabular-nums">1</span>
                 </div>
               </div>
             </div>
 
-            {/* Action Buttons */}
             <div className="pt-3 border-t border-border-subtle flex flex-col gap-2 font-mono">
               <Button
                 variant="primary"
@@ -1001,7 +1089,6 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
               >
                 <span>[ ⚡ REPLAY EVIDENCE TIMELINE ]</span>
               </Button>
-
               <div className="flex items-center gap-2">
                 <Button
                   variant="secondary"
@@ -1011,7 +1098,6 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                 >
                   VIEW CASE
                 </Button>
-
                 <Button
                   variant="secondary"
                   size="sm"
@@ -1026,23 +1112,10 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
       ) : (
         <>
-          {/* SECTION 25: RELAY PAUSED SPECIAL BANNER */}
-          {isAiPaused && !isOperator && (
-            <div className="px-3 py-1.5 border-b border-ops-warningBorder bg-ops-warningBg font-mono text-[11px] flex items-center justify-between text-ops-warning select-none">
-              <div className="flex items-center gap-2 font-bold">
-                <Pause className="w-3.5 h-3.5 text-ops-warning" />
-                <span>RELAY PAUSED • Listening for operator instruction...</span>
-              </div>
-              <span className="text-[10px] text-ink-muted hidden sm:inline">
-                AUTONOMOUS GENERATION SUSPENDED • VAD ACTIVE
-              </span>
-            </div>
-          )}
-
-          {/* STATE-SPECIFIC BANNER ALERT (IF PRESENT) */}
+          {/* BANNER MESSAGE (IF ANY) */}
           {!isAiPaused && callState !== 'RECONNECTING' && callState !== 'CONNECTION_RESTORED' && meta.bannerMessage && (
             <div
-              className={`px-3 py-1.5 border-b font-mono text-[11px] flex items-center justify-between select-none ${
+              className={`px-3 py-1 border-b font-mono text-[10px] flex items-center justify-between select-none ${
                 meta.bannerMessage.type === 'critical'
                   ? 'bg-ops-criticalBg border-ops-criticalBorder text-ops-critical'
                   : meta.bannerMessage.type === 'warning'
@@ -1050,67 +1123,58 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                   : 'bg-accent-subtle border-accent-border text-accent'
               }`}
             >
-              <div className="flex items-center gap-2 font-semibold">
+              <div className="flex items-center gap-1.5 font-semibold">
                 {meta.bannerMessage.type === 'critical' ? (
-                  <AlertOctagon className="w-3.5 h-3.5 shrink-0" />
+                  <AlertOctagon className="w-3 h-3 shrink-0" />
                 ) : meta.bannerMessage.type === 'warning' ? (
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
                 ) : (
-                  <Radio className="w-3.5 h-3.5 shrink-0" />
+                  <Radio className="w-3 h-3 shrink-0" />
                 )}
                 <span>{meta.bannerMessage.text}</span>
               </div>
-
               {meta.bannerMessage.code && (
-                <span className="text-[10px] font-mono text-ink-muted hidden sm:inline">
+                <span className="text-[9px] font-mono text-ink-muted hidden sm:inline">
                   CODE: {meta.bannerMessage.code}
                 </span>
               )}
             </div>
           )}
 
-          {/* 2. PARTICIPANT STRIPS & DUPLEX INDICATOR */}
-          <div className="p-3 bg-canvas-subtle border-b border-border-subtle space-y-2 select-none shrink-0">
-            {/* Strip 1: CUSTOMER */}
-            <div
-              className={`bg-canvas-pure border rounded-[4px] p-2.5 flex items-center justify-between shadow-hairline transition-colors ${
-                isBargeIn
-                  ? 'border-ops-criticalBorder bg-ops-criticalBg/20'
-                  : callState === 'CUSTOMER_SPEAKING'
-                  ? 'border-accent-border bg-accent-subtle/20'
-                  : 'border-border-subtle'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-[3px] bg-accent-subtle border border-accent-border flex items-center justify-center font-mono text-xs font-bold text-accent">
+          {/* 3. SLIM 2-COLUMN PARTICIPANT STRIP (Side-by-Side: Customer & Voice Agent) */}
+          <div className="px-3 py-1.5 bg-canvas-subtle border-b border-border-subtle flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 select-none shrink-0 text-xs">
+            {/* Customer Box */}
+            <div className={`flex-1 bg-canvas-pure border rounded-[4px] px-2.5 py-1 flex items-center justify-between shadow-hairline transition-colors ${
+              isBargeIn
+                ? 'border-ops-criticalBorder bg-ops-criticalBg/20'
+                : callState === 'CUSTOMER_SPEAKING'
+                ? 'border-accent-border bg-accent-subtle/20'
+                : 'border-border-subtle'
+            }`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-6 h-6 rounded-[3px] bg-accent-subtle border border-accent-border flex items-center justify-center font-mono text-[10px] font-bold text-accent shrink-0">
                   {currentCustomerInitials}
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono font-bold text-ink-muted uppercase tracking-wider">
-                      CUSTOMER
-                    </span>
-                    <span className="text-border text-xs">/</span>
-                    <span className="font-bold text-xs text-ink-primary font-sans">
-                      {currentCustomerName}
-                    </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 leading-tight">
+                    <span className="text-[9px] font-mono font-bold text-ink-muted uppercase">CUSTOMER</span>
+                    <span className="text-border text-[10px]">/</span>
+                    <span className="font-bold text-xs text-ink-primary font-sans truncate">{currentCustomerName}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] font-mono text-ink-secondary">
-                    <span>{currentLanguageMode}</span>
-                    <span>•</span>
-                    <span>{currentCustomerTier}</span>
+                  <div className="text-[9px] font-mono text-ink-muted leading-tight truncate">
+                    <span>{currentLanguageMode}</span> • <span>{currentCustomerTier}</span>
                   </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {callState === 'CUSTOMER_SPEAKING' && (
+              {/* Accurate Customer Speaking Badge: ONLY shows SPEAKING when customer is actually speaking */}
+              <div className="shrink-0 pl-2">
+                {callState === 'CUSTOMER_SPEAKING' ? (
                   <Badge variant="accent" dot size="xs" className="font-mono animate-pulse">
                     SPEAKING
                   </Badge>
-                )}
-                {callState === 'CUSTOMER_INTERRUPTED' && (
-                  <div className="flex items-center gap-2">
+                ) : callState === 'CUSTOMER_INTERRUPTED' ? (
+                  <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => openProofInspector({
                         timestamp: '21:34:02',
@@ -1125,114 +1189,64 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                           pipeline_action: 'CANCEL_TTS_IMMEDIATE'
                         }
                       })}
-                      className="text-[9px] font-mono font-bold text-ops-critical bg-ops-criticalBg border border-ops-criticalBorder px-1.5 py-0.5 rounded cursor-pointer"
+                      className="text-[8px] font-mono font-bold text-ops-critical bg-ops-criticalBg border border-ops-criticalBorder px-1 py-0.2 rounded cursor-pointer"
                     >
-                      [ VIEW EVENT ]
+                      [EVENT]
                     </button>
                     <Badge variant="critical" dot size="xs" className="font-mono animate-pulse">
                       INTERRUPTED
                     </Badge>
                   </div>
-                )}
-                {callState === 'RECONNECTING' && (
+                ) : callState === 'RECONNECTING' ? (
                   <Badge variant="warning" dot size="xs" className="font-mono animate-pulse">
                     RECONNECTING
                   </Badge>
+                ) : (
+                  <Badge variant="standby" size="xs" className="font-mono text-ink-muted">
+                    {meta.participantStatus.customer === 'SPEAKING' ? 'IDLE' : meta.participantStatus.customer}
+                  </Badge>
                 )}
-                {callState !== 'CUSTOMER_SPEAKING' &&
-                  callState !== 'CUSTOMER_INTERRUPTED' &&
-                  callState !== 'RECONNECTING' && (
-                    <Badge variant="standby" size="xs" className="font-mono">
-                      {meta.participantStatus.customer}
-                    </Badge>
-                  )}
               </div>
             </div>
 
-            {/* Real-time duplex translation indicator */}
-            <div className="flex items-center justify-center py-0.5">
-              <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-canvas-pure rounded-full border border-border-subtle text-[10px] font-mono text-ink-muted shadow-hairline">
-                <ArrowUpDown className="w-3 h-3 text-accent" />
-                <span className="tracking-tight">
-                  {isOperator
-                    ? 'OPERATOR ON LINE'
-                    : isAiPaused
-                    ? 'AI IN SILENT SHADOW MODE • LISTENING PASSIVELY'
-                    : callState === 'RECONNECTING'
-                    ? 'RE-ESTABLISHING AGORA ICE CHANNEL...'
-                    : callState === 'CONNECTION_RESTORED'
-                    ? 'WEBRTC AUDIO RESTORED'
-                    : callState === 'CONNECTING'
-                    ? 'ESTABLISHING AGORA SIP HANDSHAKE...'
-                    : isFailure
-                    ? 'RECOVERY FALLBACK ACTIVE'
-                    : 'SPEECH TRANSLATION ACTIVE'}
-                </span>
+            {/* Duplex Bridge Center Pill */}
+            <div className="hidden md:flex items-center justify-center px-1">
+              <div className="flex items-center gap-1 px-2 py-0.5 bg-canvas-pure rounded-full border border-border-subtle text-[9px] font-mono text-ink-muted shadow-hairline shrink-0">
+                <ArrowUpDown className="w-2.5 h-2.5 text-accent" />
+                <span>{isOperator ? 'OPERATOR ACTIVE' : isAiPaused ? 'PAUSED' : 'SPEECH TRANSLATION'}</span>
               </div>
             </div>
 
-            {/* Strip 2: RELAY VOICE AGENT / HUMAN OPERATOR */}
-            <div
-              className={`bg-canvas-pure border rounded-[4px] p-2.5 flex items-center justify-between shadow-hairline transition-colors ${
-                isOperator
-                  ? 'border-ops-warningBorder bg-ops-warningBg/20'
-                  : isAiPaused
-                  ? 'border-ops-warningBorder bg-ops-warningBg/10'
-                  : callState === 'RELAY_SPEAKING'
-                  ? 'border-ops-liveBorder bg-ops-liveBg/20'
-                  : isFailure
-                  ? 'border-ops-criticalBorder bg-ops-criticalBg/10'
-                  : 'border-border-subtle'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-8 h-8 rounded-[3px] border flex items-center justify-center font-mono text-xs font-bold ${
-                    isOperator
-                      ? 'bg-ops-warningBg border-[#FED7AA] text-ops-warning'
-                      : isAiPaused
-                      ? 'bg-ops-warningBg border-ops-warningBorder text-ops-warning'
-                      : isFailure
-                      ? 'bg-ops-criticalBg border-ops-criticalBorder text-ops-critical'
-                      : 'bg-ops-liveBg border-ops-liveBorder text-ops-live'
-                  }`}
-                >
+            {/* Voice Agent / Operator Box */}
+            <div className={`flex-1 bg-canvas-pure border rounded-[4px] px-2.5 py-1 flex items-center justify-between shadow-hairline transition-colors ${
+              isOperator
+                ? 'border-ops-warningBorder bg-ops-warningBg/20'
+                : isAiPaused
+                ? 'border-ops-warningBorder bg-ops-warningBg/10'
+                : callState === 'RELAY_SPEAKING'
+                ? 'border-ops-liveBorder bg-ops-liveBg/20'
+                : 'border-border-subtle'
+            }`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <div className={`w-6 h-6 rounded-[3px] border flex items-center justify-center font-mono text-[10px] font-bold shrink-0 ${
+                  isOperator ? 'bg-ops-warningBg border-ops-warningBorder text-ops-warning' : 'bg-ops-liveBg border-ops-liveBorder text-ops-live'
+                }`}>
                   {isOperator ? 'MS' : 'RL'}
                 </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-mono font-bold text-ink-muted uppercase tracking-wider">
-                      {isOperator ? 'OPERATOR' : 'RELAY'}
-                    </span>
-                    <span className="text-border text-xs">/</span>
-                    <span className="font-bold text-xs text-ink-primary font-sans">
-                      {isOperator ? 'Maya Sharma (Senior Operator)' : 'Voice Agent'}
-                    </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 leading-tight">
+                    <span className="text-[9px] font-mono font-bold text-ink-muted uppercase">{isOperator ? 'OPERATOR' : 'RELAY'}</span>
+                    <span className="text-border text-[10px]">/</span>
+                    <span className="font-bold text-xs text-ink-primary font-sans truncate">{isOperator ? 'Maya Sharma' : 'Voice Agent'}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-[10px] font-mono text-ink-secondary">
-                    <span>
-                      {isOperator
-                        ? 'Live On Line'
-                        : isAiPaused
-                        ? 'Paused (Listening passively)'
-                        : callState === 'RECONNECTING'
-                        ? 'Re-synchronizing Agora Audio Stream...'
-                        : callState === 'TOOL_EXECUTING'
-                        ? 'Executing RPC tool...'
-                        : callState === 'WAITING_FOR_APPROVAL'
-                        ? 'Awaiting Operator Approval'
-                        : isFailure
-                        ? 'Recovering pipeline...'
-                        : 'Listening & Synthesizing'}
-                    </span>
-                    <span>•</span>
-                    <span>Agora RTC Opus</span>
+                  <div className="text-[9px] font-mono text-ink-muted leading-tight truncate">
+                    <span>{isOperator ? 'Live On Line' : isAiPaused ? 'Paused' : 'Listening & Synthesizing'}</span> • <span>Agora RTC Opus</span>
                   </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {/* VOICE GENDER SWITCHER (Female / Male) */}
+              <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                {/* Voice Gender Switcher */}
                 <button
                   type="button"
                   onClick={() => {
@@ -1240,121 +1254,103 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                     setAgentGender(nextGender)
                     speechService.setAgentGender(nextGender)
                   }}
-                  className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-[3px] border transition-all cursor-pointer flex items-center gap-1 ${
+                  className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-[2px] border transition-all cursor-pointer ${
                     agentGender === 'female'
-                      ? 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/30 hover:bg-pink-500/20'
-                      : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30 hover:bg-blue-500/20'
+                      ? 'bg-pink-500/10 text-pink-600 border-pink-500/30 hover:bg-pink-500/20'
+                      : 'bg-blue-500/10 text-blue-600 border-blue-500/30 hover:bg-blue-500/20'
                   }`}
-                  title="Toggle Agent Voice Gender & Hindi Grammar (Female vs Male)"
+                  title="Toggle Agent Voice Gender"
                 >
-                  <span>{agentGender === 'female' ? '♀ FEMALE VOICE' : '♂ MALE VOICE'}</span>
+                  <span>{agentGender === 'female' ? '♀ FEMALE' : '♂ MALE'}</span>
                 </button>
 
                 {isOperator ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono">
-                    HUMAN ACTIVE
-                  </Badge>
+                  <Badge variant="warning" dot size="xs" className="font-mono">HUMAN</Badge>
                 ) : isAiPaused ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono">
-                    PAUSED
-                  </Badge>
-                ) : callState === 'RECONNECTING' ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono animate-pulse">
-                    RECONNECTING
-                  </Badge>
-                ) : callState === 'CONNECTION_RESTORED' ? (
-                  <Badge variant="live" dot size="xs" className="font-mono">
-                    RESTORED
-                  </Badge>
+                  <Badge variant="warning" dot size="xs" className="font-mono">PAUSED</Badge>
                 ) : callState === 'RELAY_SPEAKING' ? (
-                  <Badge variant="live" dot size="xs" className="font-mono animate-pulse">
-                    SPEAKING
-                  </Badge>
-                ) : callState === 'TOOL_EXECUTING' ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono animate-pulse">
-                    TOOL EXEC
-                  </Badge>
-                ) : isFailure ? (
-                  <Badge variant="critical" dot size="xs" className="font-mono">
-                    ERROR
-                  </Badge>
+                  <Badge variant="live" dot size="xs" className="font-mono animate-pulse">SPEAKING</Badge>
                 ) : (
-                  <Badge variant="live" dot size="xs" className="font-mono">
-                    ACTIVE
-                  </Badge>
+                  <Badge variant="live" dot size="xs" className="font-mono">ACTIVE</Badge>
                 )}
               </div>
             </div>
           </div>
 
-          {/* 3. PROMINENT LIVE VOICE & MICROPHONE ACTIVE CARD */}
-          <div className="mx-3 my-2 bg-canvas-pure border border-border-subtle rounded-[6px] p-4 shadow-hairline space-y-3 text-center select-none font-mono">
-            <div className="space-y-0.5">
-              <div className="flex items-center justify-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${callState === 'CUSTOMER_SPEAKING' ? 'bg-ops-live animate-pulse' : 'bg-accent'}`} />
-                <span className="text-xs font-bold tracking-widest text-ink-primary uppercase">RELAY AI</span>
-                <span className="text-border">·</span>
-                <span className="text-xs text-ink-secondary font-sans font-medium">
-                  {isMuted ? 'Muted' : callState === 'CUSTOMER_SPEAKING' ? 'Listening...' : 'Active & Ready'}
-                </span>
+          {/* 4. COMPACT VOICE & INPUT CONSOLE (Slim Waveform, Mic Controls, Spoken Chips & Input) */}
+          <div className="px-3 py-1.5 bg-canvas-pure border-b border-border-subtle flex flex-col gap-1.5 select-none font-mono shrink-0">
+            {/* Row 1: Slim Oscilloscope Waveform & Mute Switch */}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <WaveformMonitor callState={callState} />
               </div>
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                className={`h-7 px-2.5 rounded-[3px] font-mono text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 shrink-0 ${
+                  isMuted
+                    ? 'bg-ops-warningBg text-ops-warning border-ops-warningBorder hover:bg-ops-warningBg/80'
+                    : 'bg-canvas-subtle text-ink-primary border-border-subtle hover:bg-canvas-muted'
+                }`}
+                title={isMuted ? 'Click to unmute microphone' : 'Click to mute microphone'}
+              >
+                {isMuted ? <MicOff className="w-3 h-3 text-ops-warning" /> : <Mic className="w-3 h-3 text-ops-live" />}
+                <span>{isMuted ? 'UNMUTE' : 'MUTE'}</span>
+              </button>
             </div>
 
-            {/* LIVE WAVEFORM MONITOR */}
-            <div className="py-1">
-              <WaveformMonitor />
-            </div>
-
-            {/* MICROPHONE STATUS & MUTE BUTTON */}
-            <div className="flex items-center justify-between pt-2 border-t border-border-subtle/80 text-xs">
-              <div className="flex items-center gap-2">
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center ${isMuted ? 'bg-ops-warningBg text-ops-warning' : 'bg-ops-liveBg text-ops-live'}`}>
-                  {isMuted ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                </div>
-                <div className="text-left font-mono">
-                  <span className={`font-bold block ${isMuted ? 'text-ops-warning' : 'text-ops-live'}`}>
-                    {isMuted ? '🎙 MICROPHONE MUTED' : '🎙 YOUR MICROPHONE IS ACTIVE'}
-                  </span>
-                  <span className="text-[10px] text-ink-muted">
-                    {isMuted ? 'Click unmute to speak' : 'Speak naturally into your microphone or trigger phrases below'}
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleToggleMute}
-                  className="font-mono text-xs font-bold uppercase tracking-wider cursor-pointer"
-                >
-                  {isMuted ? 'UNMUTE' : 'MUTE'}
-                </Button>
-              </div>
-            </div>
-
-            {/* QUICK SPOKEN PHRASES & INTERACTIVE VOICE TRIGGER BAR */}
-            <div className="pt-2.5 border-t border-border-subtle/80 flex flex-col gap-2 text-left font-sans">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[10px] font-mono font-bold text-ink-muted uppercase">
-                  Say / Test:
-                </span>
-                {[
-                  { text: 'Mera order 5 din se nahi aaya', label: '1. "Mera order late hai"' },
-                  { text: 'Mujhe refund chahiye', label: '2. "Mujhe refund chahiye"' },
-                  { text: 'UPI par bhej do', label: '3. "UPI par bhej do"' },
-                  { text: 'Return policy kya hai?', label: '4. "Policy inquiry"' },
-                  { text: 'Bas itna hi tha, thank you!', label: '5. "Thank you, bye"' },
-                  { text: 'Can we switch to English please?', label: '6. "Switch to English"' },
-                ].map((phrase) => (
+            {/* Row 2: Test Phrase Chips (Horizontal single-line scroll) + Direct Spoken Input */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 shrink-0 max-w-full sm:max-w-[55%]">
+                <span className="text-[9px] font-mono font-bold text-ink-muted uppercase shrink-0">SAY:</span>
+                {(
+                  activeScenario?.id === 'payment-failure'
+                    ? [
+                        { text: 'My bank account was debited twice for ₹2,499', label: '1. Double debit' },
+                        { text: 'Can you reverse the duplicate charge?', label: '2. Reverse charge' },
+                        { text: 'Thank you for resolving it', label: '3. Thanks' },
+                      ]
+                    : activeScenario?.id === 'language-switch'
+                    ? [
+                        { text: 'I want to change my delivery address', label: '1. English request' },
+                        { text: 'Bhaiya Noida Sector 62 bhej do', label: '2. Hindi: Noida 62' },
+                        { text: 'Address update ho gaya kya?', label: '3. Confirm update' },
+                      ]
+                    : activeScenario?.id === 'human-takeover'
+                    ? [
+                        { text: 'I want to speak with a human manager', label: '1. Demand manager' },
+                        { text: 'Cancel our enterprise account', label: '2. Cancel contract' },
+                        { text: 'Thank you Maya', label: '3. Thanks' },
+                      ]
+                    : activeScenario?.id === 'tool-failure'
+                    ? [
+                        { text: 'Mera package track nahi ho raha hai', label: '1. Tracking error' },
+                        { text: 'Carrier API timeout check karo', label: '2. Check carrier' },
+                        { text: 'Manual trace shuru karo', label: '3. Manual dispatch' },
+                      ]
+                    : activeScenario?.id === 'angry-customer'
+                    ? [
+                        { text: 'Yeh teesri baar hai jab tumne mera time waste kiya!', label: '1. Angry complaint' },
+                        { text: 'Mujhe compensation credit chahiye', label: '2. Demand credit' },
+                        { text: '₹1,000 credit accept karta hoon', label: '3. Accept credit' },
+                      ]
+                    : [
+                        { text: 'Mera order 5 din se nahi aaya', label: '1. Order late' },
+                        { text: 'Mujhe refund chahiye', label: '2. Refund' },
+                        { text: 'UPI par bhej do', label: '3. UPI' },
+                        { text: 'Return policy kya hai?', label: '4. Policy' },
+                        { text: 'Bas itna hi tha, thank you!', label: '5. Thanks' },
+                        { text: 'Can we switch to English please?', label: '6. English' },
+                      ]
+                ).map((phrase) => (
                   <button
                     key={phrase.text}
                     type="button"
                     onClick={() => handleProcessSpokenUtterance(phrase.text)}
-                    className="bg-canvas-subtle hover:bg-canvas-muted text-ink-primary border border-border-subtle hover:border-accent rounded px-2.5 py-1 text-[11px] font-mono font-medium transition-all cursor-pointer flex items-center gap-1.5 shadow-hairline active:scale-95"
-                    title={`Click to simulate speaking: "${phrase.text}"`}
+                    className="bg-canvas-subtle hover:bg-canvas-muted text-ink-primary border border-border-subtle hover:border-accent rounded px-2 py-0.5 text-[10px] font-mono whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 shadow-hairline active:scale-95 shrink-0"
+                    title={`Speak: "${phrase.text}"`}
                   >
-                    <Mic className="w-2.5 h-2.5 text-accent" />
+                    <Mic className="w-2 h-2 text-accent" />
                     <span>{phrase.label}</span>
                   </button>
                 ))}
@@ -1368,20 +1364,20 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                   handleProcessSpokenUtterance(textToSend)
                   setCustomUtterance('')
                 }}
-                className="flex items-center gap-2 pt-1"
+                className="flex items-center gap-1.5 flex-1 min-w-0"
               >
                 <input
                   type="text"
-                  placeholder="Type custom speech here (or click SPEAK to send 'Mera order 5 din se nahi aaya')..."
+                  placeholder="Type speech or click phrase on left..."
                   value={customUtterance}
                   onChange={(e) => setCustomUtterance(e.target.value)}
-                  className="bg-canvas-subtle border border-border-subtle rounded px-3 py-1.5 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-accent flex-1 font-sans shadow-xs"
+                  className="bg-canvas-subtle border border-border-subtle rounded px-2.5 py-1 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-accent flex-1 font-sans shadow-xs h-7 min-w-0"
                 />
                 <Button
                   type="submit"
                   variant="primary"
-                  size="sm"
-                  className="font-mono text-xs font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover active:bg-[#083070] h-8 px-4 cursor-pointer shadow-hairline"
+                  size="xs"
+                  className="font-mono text-[10px] font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover active:bg-[#083070] h-7 px-3 cursor-pointer shrink-0 shadow-hairline"
                 >
                   SPEAK
                 </Button>
@@ -1389,7 +1385,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             </div>
           </div>
 
-          {/* 4. SECTION 7, 32 & 42: ACCESSIBLE LIVE TRANSCRIPT RAIL & HANDOFF BRIEF */}
+          {/* 5. MAIN EXPANDED LIVE TRANSCRIPT RAIL & LIVE EVENTS (Full Vertical Space) */}
           <div
             className="flex-1 overflow-y-auto p-4 bg-canvas min-h-0"
             role="log"

@@ -14,6 +14,7 @@ export const serverConfig = {
 
   // AI Service Keys
   ai: {
+    geminiApiKey: process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
     deepgramApiKey: process.env.DEEPGRAM_API_KEY || '',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',

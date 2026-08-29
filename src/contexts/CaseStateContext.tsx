@@ -12,6 +12,7 @@ import { RelayEvent } from '../types/relayEvents'
 import { agoraRtm } from '../services/agoraRtmService'
 import { agoraRtc, RealtimeTelemetry } from '../services/agoraRtcService'
 import { caseStateReducer, reconstructCaseState } from '../services/caseStateReducer'
+import { DEMO_SCENARIOS, DemoScenario } from '../data/demoScenarios'
 
 export type RuntimeMode = 'REAL' | 'DEMO'
 
@@ -21,6 +22,9 @@ interface CaseStateContextType {
   toggleRuntimeMode: () => void
   caseState: CaseState
   setCaseState: React.Dispatch<React.SetStateAction<CaseState>>
+  activeScenario: DemoScenario | null
+  setActiveScenario: (scenario: DemoScenario | null) => void
+  loadScenario: (scenario: DemoScenario) => void
   events: RelayEvent[]
   dispatchRelayEvent: (event: RelayEvent) => void
   replayUpToIndex: (index: number) => void
@@ -47,6 +51,7 @@ const CaseStateContext = createContext<CaseStateContextType | null>(null)
 
 export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('REAL')
+  const [activeScenario, setActiveScenario] = useState<DemoScenario | null>(DEMO_SCENARIOS[0])
   const [caseState, setCaseState] = useState<CaseState>(INITIAL_CASE_STATE)
   const [events, setEvents] = useState<RelayEvent[]>([
     {
@@ -203,10 +208,169 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setCaseState((prev) => ({ ...prev, status }))
   }
 
+  const loadScenario = (scenario: DemoScenario) => {
+    setActiveScenario(scenario)
+
+    const initials = scenario.customer
+      .split(' ')
+      .map((p) => p[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2) || 'CU'
+
+    const parsedAmount = scenario.proposedAction.amount
+      ? parseInt(scenario.proposedAction.amount.replace(/[^0-9]/g, '')) || undefined
+      : undefined
+
+    const actionType: 'REFUND' | 'ESCALATION' | 'REROUTE' =
+      scenario.id === 'delivery-refund' || scenario.id === 'angry-customer' || scenario.id === 'payment-failure'
+        ? 'REFUND'
+        : scenario.id === 'language-switch'
+        ? 'REROUTE'
+        : 'ESCALATION'
+
+    const riskTier = (scenario.proposedAction.risk.toUpperCase() as 'LOW' | 'MEDIUM' | 'HIGH') || 'MEDIUM'
+
+    const newCaseState: CaseState = {
+      id: scenario.caseId,
+      customerId: `CUST-${initials}-01`,
+      customerName: scenario.customer,
+      customerPhone: '+91 98201 44102',
+      customerTier: scenario.id === 'human-takeover' ? 'Enterprise' : 'Platinum',
+      channelName: `relay-case-${scenario.caseId.toLowerCase()}`,
+      language: scenario.language,
+      intent: scenario.caseTitle,
+      sentiment: scenario.sentiment,
+      status:
+        scenario.callState === 'CALL_ENDED'
+          ? 'resolved'
+          : scenario.callState === 'WAITING_FOR_APPROVAL'
+          ? 'awaiting_approval'
+          : 'active',
+      takeoverState: scenario.isHumanTakeover ? 'HUMAN_ACTIVE' : 'AI_ACTIVE',
+      facts: scenario.proposedAction.actionBasis.map((basis, idx) => ({
+        id: `fact-${scenario.caseId}-${idx}`,
+        label: basis,
+        verified: true,
+        source: 'Relay Knowledge Graph',
+      })),
+      unknowns: scenario.callState === 'WAITING_FOR_APPROVAL' ? [] : ['Resolution SLA confirmation'],
+      activeAction: scenario.proposedAction
+        ? {
+            id: `appr-${scenario.caseId.toLowerCase()}`,
+            type: actionType,
+            title: scenario.proposedAction.title,
+            amount: parsedAmount,
+            currency: 'INR',
+            riskTier: riskTier,
+            policyId: 'POL-REFUND-3.2',
+            policyUsed: {
+              policyId: 'POL-REFUND-3.2',
+              name: 'Dispute Resolution & Compensation Matrix',
+              section: 'Section 4.1 — Immediate Settlement Protocol',
+            },
+            evidence: scenario.proposedAction.actionBasis,
+            justification: scenario.proposedAction.actionBasis,
+            status: scenario.callState === 'WAITING_FOR_APPROVAL' ? 'PENDING' : 'APPROVED',
+          }
+        : undefined,
+      activeFailure:
+        scenario.isServiceFailed || scenario.callState === 'TOOL_ERROR'
+          ? {
+              state: 'TOOL_ERROR',
+              message: 'Carrier tracking gateway 504 Gateway Timeout (AWB: DEL-9928174)',
+              escalate: false,
+              attempt: 3,
+              maxAttempts: 3,
+              timestamp: '21:34:00',
+              recovery: {
+                autoRetry: true,
+                maxAttempts: 3,
+                fallback: 'human.escalation',
+                userMessage: 'Carrier API timed out after 3 retries. Engaging manual trace.',
+              },
+            }
+          : undefined,
+      participants: [
+        {
+          id: `CUST-${initials}-01`,
+          role: 'CUSTOMER',
+          name: scenario.customer,
+          joinedAt: new Date().toLocaleTimeString(),
+        },
+        {
+          id: 'AI-9999',
+          role: 'AI_AGENT',
+          name: 'RELAY AI',
+          joinedAt: new Date().toLocaleTimeString(),
+        },
+        ...(scenario.isHumanTakeover
+          ? [
+              {
+                id: 'OP-782',
+                role: 'OPERATOR' as const,
+                name: 'Maya Sharma (Senior Operator)',
+                joinedAt: new Date().toLocaleTimeString(),
+              },
+            ]
+          : []),
+      ],
+    }
+
+    setCaseState(newCaseState)
+
+    // Build timeline events for this scenario
+    const newEvents: RelayEvent[] = [
+      {
+        type: 'call.started',
+        caseId: scenario.caseId,
+        timestamp: '21:33:40',
+      },
+      ...scenario.transcript.map((item) => ({
+        type: (item.isTool ? 'tool.completed' : 'speech.transcript') as any,
+        id: item.id,
+        speaker: (item.speaker === 'MAYA' ? 'operator' : item.speaker === 'CUSTOMER' ? 'customer' : 'agent') as any,
+        text: item.content,
+        translation: item.translation,
+        language: item.language,
+        timestamp: item.timestamp,
+        tool: item.toolName,
+        status: item.status,
+      })),
+      ...(scenario.callState === 'WAITING_FOR_APPROVAL'
+        ? [
+            {
+              type: 'approval.created' as const,
+              actionId: `appr-${scenario.caseId.toLowerCase()}`,
+              amount: parsedAmount || 1499,
+              timestamp: '21:34:03',
+            },
+          ]
+        : []),
+      ...(scenario.isHumanTakeover
+        ? [
+            {
+              type: 'human.takeover' as const,
+              operatorId: 'OP-782',
+              state: 'HUMAN_ACTIVE' as const,
+              reason: 'Operator takeover',
+              timestamp: '21:34:08',
+            },
+          ]
+        : []),
+    ]
+
+    setEvents(newEvents)
+
+    // Broadcast across Agora RTM
+    newEvents.forEach((ev) => agoraRtm.publishRelayEvent(ev))
+  }
+
   const approveActiveAction = async (operatorName: string = 'Maya Sharma') => {
     const now = new Date().toLocaleTimeString()
     const approvalId = caseState.activeAction?.id || 'appr-1042-99042'
     const amount = caseState.activeAction?.amount || 1499
+    const actionTitle = caseState.activeAction?.title || 'Action'
 
     // Optimistically update case state immediately
     setCaseState((prev) => ({
@@ -220,17 +384,15 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             approvedBy: operatorName,
           }
         : undefined,
-      facts: prev.facts.some((f) => f.label.includes('Refund Settled') || f.label.includes('Refund Approved'))
-        ? prev.facts
-        : [
-            ...prev.facts,
-            {
-              id: `f-appr-${Date.now()}`,
-              label: `Refund Settled ₹1,499 (${operatorName})`,
-              verified: true,
-              source: 'NPCI UPI Instant Settlement',
-            },
-          ],
+      facts: [
+        ...prev.facts,
+        {
+          id: `f-appr-${Date.now()}`,
+          label: `${actionTitle} Approved (${operatorName})`,
+          verified: true,
+          source: 'Operator Authorization Matrix',
+        },
+      ],
     }))
 
     // Dispatch lifecycle events
@@ -256,11 +418,15 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       timestamp: now,
     })
 
+    const confirmationText = amount
+      ? `${actionTitle} initiate ho gaya hai. ₹${amount} account mein process ho jayenge.`
+      : `${actionTitle} safaltapoorvak approve aur execute ho gaya hai.`
+
     dispatchRelayEvent({
       type: 'speech.transcript',
       speaker: 'agent',
-      text: 'Refund initiate ho gaya hai. Aapke account mein ₹1,499 transfer ho jayenge.',
-      translation: 'Refund has been initiated. ₹1,499 will be transferred to your account.',
+      text: confirmationText,
+      translation: `Approved and processed ${actionTitle} successfully.`,
       language: 'Hindi / Hinglish',
       timestamp: now,
     })
@@ -407,6 +573,9 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         toggleRuntimeMode,
         caseState,
         setCaseState,
+        activeScenario,
+        setActiveScenario,
+        loadScenario,
         events,
         dispatchRelayEvent,
         replayUpToIndex,

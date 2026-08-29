@@ -29,7 +29,7 @@ export type ViewMode =
   | 'system-health'
 
 export const App: React.FC = () => {
-  const { runtimeMode, startNewLiveCase, caseState } = useCaseState()
+  const { runtimeMode, startNewLiveCase, caseState, loadScenario } = useCaseState()
   const [currentTab, setCurrentTab] = useState<NavTabId>('live-calls')
   const [selectedCaseId, setSelectedCaseId] = useState<string>('RLY-1042')
   const [viewMode, setViewMode] = useState<ViewMode>('live-workstation')
@@ -109,6 +109,7 @@ export const App: React.FC = () => {
     setActiveScenarioId(scenario.id)
     setSelectedCaseId(scenario.caseId)
     setIsHumanTakeover(scenario.isHumanTakeover)
+    loadScenario(scenario)
     setViewMode('live-workstation')
     setCurrentTab('live-calls')
   }

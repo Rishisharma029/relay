@@ -486,6 +486,7 @@ function agoraApiPlugin(): Plugin {
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: './',
   plugins: [react(), agoraApiPlugin()],
   server: {
     port: 3000,
