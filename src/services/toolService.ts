@@ -4,6 +4,7 @@
  */
 
 import { agoraRtm } from './agoraRtmService'
+import { apiUrl } from '../config/api'
 
 export interface ToolExecutionResponse {
   type: 'tool.completed' | 'tool.failed'
@@ -25,7 +26,7 @@ export async function dispatchBackendTool(
   })
 
   try {
-    const res = await fetch('/api/tools/execute', {
+    const res = await fetch(apiUrl('/api/tools/execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

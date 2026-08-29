@@ -13,6 +13,7 @@ import { agoraRtm } from '../services/agoraRtmService'
 import { agoraRtc, RealtimeTelemetry } from '../services/agoraRtcService'
 import { caseStateReducer, reconstructCaseState } from '../services/caseStateReducer'
 import { DEMO_SCENARIOS, DemoScenario } from '../data/demoScenarios'
+import { apiUrl } from '../config/api'
 
 export type RuntimeMode = 'REAL' | 'DEMO'
 
@@ -432,7 +433,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     })
 
     try {
-      await fetch('/api/approvals/approve', {
+      await fetch(apiUrl('/api/approvals/approve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -448,7 +449,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const declineActiveAction = async () => {
     try {
-      await fetch('/api/approvals/decline', {
+      await fetch(apiUrl('/api/approvals/decline'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -548,7 +549,7 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ])
 
     // Asynchronously notify backend to persist new case record
-    fetch('/api/cases', {
+    fetch(apiUrl('/api/cases'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

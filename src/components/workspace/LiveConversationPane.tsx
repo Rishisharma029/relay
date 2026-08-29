@@ -29,6 +29,7 @@ import { speechService } from '../../services/speechRecognitionService'
 import { useCaseState } from '../../contexts/CaseStateContext'
 import { RelayEvent } from '../../types/relayEvents'
 import { DEMO_SCENARIOS } from '../../data/demoScenarios'
+import { apiUrl } from '../../config/api'
 
 interface LiveConversationPaneProps {
   isHumanTakeover: boolean
@@ -145,7 +146,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     setAiWorkingState('Understanding...')
 
     try {
-      const res = await fetch('/api/agent/turn', {
+      const res = await fetch(apiUrl('/api/agent/turn'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -647,7 +648,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
     try {
       setAiWorkingState('Understanding...')
-      const res = await fetch('/api/agent/turn', {
+      const res = await fetch(apiUrl('/api/agent/turn'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -722,7 +723,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     setIsAiPaused(false)
 
     try {
-      const res = await fetch('/api/agent/turn', {
+      const res = await fetch(apiUrl('/api/agent/turn'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

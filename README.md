@@ -524,27 +524,60 @@ Database health and row counts.
 
 ---
 
-## 🚀 Deployment & GitHub Pages
+## 🚀 Deployment & Decoupled Production Architecture
 
-### Live Hosted Demo
-- **URL:** [https://rishisharma029.github.io/relay/](https://rishisharma029.github.io/relay/)
-- **Automated CI/CD:** Powered by GitHub Actions workflow (`.github/workflows/deploy.yml`) on every push to `main`.
+RELAY follows a modern decoupled cloud architecture:
+* **Frontend UI**: Hosted on GitHub Pages / Vercel (`dist/`).
+* **Backend API Server**: Node.js microservice hosted on **Render / Railway / Google Cloud Run / Heroku**.
+* **Realtime Audio & Event Bus**: Agora RTC + Agora RTM.
 
-### Deploying to GitHub Pages Manually
-```bash
-# 1. Install dependencies
-npm install
-
-# 2. Build and publish directly to gh-pages branch
-npm run deploy
+```
+┌────────────────────────────────────────────────────────┐
+│                   FRONTEND UI                          │
+│            (GitHub Pages / Vercel)                     │
+│   https://rishisharma029.github.io/relay/              │
+└───────────────┬────────────────────────┬───────────────┘
+                │                        │
+       RTC Opus Audio              REST API / SSE Events
+       (Direct Agora SDK)         (VITE_API_BASE_URL)
+                │                        │
+                ▼                        ▼
+┌────────────────────────┐      ┌────────────────────────┐
+│   AGORA RTC CLOUD      │      │    BACKEND SERVER      │
+│  48kHz Low-Latency     │      │   (Render / Railway)   │
+│  Interactive Voice Bus │      │  • /api/agora/token    │
+└────────────────────────┘      │  • /api/agent/turn     │
+                                │  • /api/tools/execute  │
+                                │  • /api/approvals      │
+                                └────────────────────────┘
 ```
 
-### GitHub Repository Settings Setup (1-time)
-1. Go to **Settings** → **Pages** on your repository.
-2. Under **Build and deployment** → **Branch**:
-   - Select **`gh-pages`**
-   - Folder: **`/ (root)`**
-   - Click **Save**
+### 1. Deploying the Backend (Render / Railway / Cloud Run)
+
+#### Option A: Deploy on Render (1-Click Blueprint)
+1. Push this repository to GitHub.
+2. Log into [Render Dashboard](https://dashboard.render.com/) and click **New +** → **Blueprint**.
+3. Select this repo — Render will automatically read [`render.yaml`](file:///c:/Users/Rishi%20Sharma/OneDrive/Desktop/PRODUCTION/REPLAY/render.yaml) and configure the web service.
+4. Set your environment variables (`AGORA_APP_ID`, `AGORA_APP_CERTIFICATE`, `GEMINI_API_KEY`, etc.).
+5. Copy your Render service URL (e.g. `https://relay-api.onrender.com`).
+
+#### Option B: Deploy on Railway / Docker / Cloud Run
+```bash
+# Start standalone production server locally or in container
+npm run start # Runs node server/index.js on PORT (default 3000)
+```
+
+### 2. Connect Frontend to Backend
+Add `VITE_API_BASE_URL` to your frontend build or `.env`:
+```env
+VITE_API_BASE_URL=https://relay-api.onrender.com
+```
+
+### 3. Deploying the Frontend (GitHub Pages)
+```bash
+# Build and publish directly to gh-pages branch
+npm run deploy
+```
 
 ---
 

@@ -6,6 +6,7 @@ import AgoraRTC, {
 } from 'agora-rtc-sdk-ng'
 import { agoraRtm } from './agoraRtmService'
 import { telemetryCollector } from './telemetryCollector'
+import { apiUrl } from '../config/api'
 
 export type AgoraConnectionState =
   | 'DISCONNECTED'
@@ -121,7 +122,7 @@ class AgoraRtcService {
 
   public async renewRtcToken(): Promise<boolean> {
     try {
-      const res = await fetch('/api/agora/token', {
+      const res = await fetch(apiUrl('/api/agora/token'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channel: this.channelName, uid: this.currentUid || 1042 }),
@@ -242,7 +243,7 @@ class AgoraRtcService {
       let resolvedAppId = this.appId
 
       try {
-        const tokenRes = await fetch('/api/agora/token', {
+        const tokenRes = await fetch(apiUrl('/api/agora/token'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -300,7 +301,7 @@ class AgoraRtcService {
       // STEP 6: AGENT_STARTING (Mandatory)
       this.updateState('AGENT_STARTING')
       try {
-        const agentRes = await fetch('/api/agent/start', {
+        const agentRes = await fetch(apiUrl('/api/agent/start'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
