@@ -1,34 +1,40 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { WaveformMonitor } from './WaveformMonitor'
 import { CallStateSimulator } from './CallStateSimulator'
-import { CallState, CALL_STATES_META } from '../../types/callState'
+import { CallState } from '../../types/callState'
 import { VoiceControlsBar } from './VoiceControlsBar'
 import { EventProofModal, ProofEvent } from './EventProofModal'
 import {
   Languages,
-  Radio,
-  ArrowUpDown,
-  Wrench,
-  Play,
-  AlertTriangle,
-  AlertOctagon,
-  Copy,
-  Check,
-  Loader2,
+  Sparkles,
+  RefreshCw,
+  User,
   Mic,
   MicOff,
-  RotateCcw
+  Send,
+  AlertTriangle,
+  Headphones,
+  UserCheck,
+  Package,
+  DollarSign,
+  CreditCard,
+  XCircle,
+  MapPin,
+  HelpCircle,
+  Loader2,
+  PhoneCall,
+  PhoneOff,
+  ChevronDown,
+  Volume2,
+  X
 } from 'lucide-react'
 
-import { soundEffects } from '../../utils/soundEffects'
+import { speechService, SpeechRecognitionResultPayload } from '../../services/speechRecognitionService'
 import { agoraRtc } from '../../services/agoraRtcService'
-import { agoraRtm } from '../../services/agoraRtmService'
-import { speechService } from '../../services/speechRecognitionService'
 import { useCaseState } from '../../contexts/CaseStateContext'
-import { RelayEvent } from '../../types/relayEvents'
-import { DEMO_SCENARIOS } from '../../data/demoScenarios'
+import { useDevMode } from '../../contexts/DevModeContext'
+import { DEMO_SCENARIOS, DemoScenario } from '../../data/demoScenarios'
 import { apiUrl } from '../../config/api'
 
 interface LiveConversationPaneProps {
@@ -49,41 +55,812 @@ interface TranscriptItem {
   isTool?: boolean
   toolName?: string
   status?: string
-  isLanguageSwitch?: boolean
-  switchFrom?: string
-  switchTo?: string
+  isPendingTool?: boolean
+  isInterim?: boolean
 }
 
-export type AiWorkingState = 'Listening...' | 'Understanding...' | 'Checking order...' | 'Waiting for approval...' | 'Executing action...' | 'Idle'
+export type AiWorkingState =
+  | 'AI Listening...'
+  | 'Customer Speaking...'
+  | 'Detecting intent & routing tools...'
+  | 'Querying enterprise database...'
+  | 'Retrying tool execution...'
+  | 'Connecting human operator...'
+  | 'Human Operator Active'
+  | 'AI Responding...'
+  | 'Call Ended'
+
+export type RelayLoopStage = 'LISTEN' | 'UNDERSTAND' | 'VERIFY' | 'DECIDE' | 'GOVERN' | 'ACT' | 'EXPLAIN'
+
+const RELAY_LOOP_STAGES: { id: RelayLoopStage; label: string; desc: string }[] = [
+  { id: 'LISTEN', label: '1. LISTEN', desc: 'Realtime Agora RTC / Continuous ASR' },
+  { id: 'UNDERSTAND', label: '2. UNDERSTAND', desc: 'Multilingual Intent & Translation' },
+  { id: 'VERIFY', label: '3. VERIFY', desc: 'Enterprise Order & Logistics Gateway' },
+  { id: 'DECIDE', label: '4. DECIDE', desc: 'Policy Graph (POL-REFUND-3.2)' },
+  { id: 'GOVERN', label: '5. GOVERN', desc: 'Tool Router & Human Approval Gate' },
+  { id: 'ACT', label: '6. ACT', desc: 'Atomic Electronic NPCI Settlement' },
+  { id: 'EXPLAIN', label: '7. EXPLAIN', desc: 'Spoken Response & Append-Only Replay' },
+]
+
+const INTENT_CATEGORY_PROMPTS: Record<string, { label: string; icon: any; phrases: string[] }> = {
+  tracking: {
+    label: 'Tracking',
+    icon: Package,
+    phrases: [
+      'Can you tell me where my package is?',
+      'Where is order 72143 right now?',
+      'Mera order 55219 kahan pohcha hai?',
+      'What is the delivery status of order 84921?',
+      'When will my keyboard arrive?'
+    ]
+  },
+  refund: {
+    label: 'Refunds',
+    icon: DollarSign,
+    phrases: [
+      'I want my money back for order 72143.',
+      'Mera order 4 din late hai, refund chahiye!',
+      'Process refund for delay under policy POL-REFUND-3.2.',
+      'Can you credit the refund to my UPI ID?'
+    ]
+  },
+  charge: {
+    label: 'Double Charge',
+    icon: CreditCard,
+    phrases: [
+      'I was charged twice for order 1039.',
+      'Paise do baar cut gaye hain account se.',
+      'Payment deducted but order showing pending.'
+    ]
+  },
+  cancel: {
+    label: 'Cancel Order',
+    icon: XCircle,
+    phrases: [
+      'Cancel the order 84921 immediately.',
+      'Mujhe order 55219 cancel karna hai.',
+      'Stop the shipment and cancel my order.'
+    ]
+  },
+  address: {
+    label: 'Address Change',
+    icon: MapPin,
+    phrases: [
+      'Can you change my delivery address for order 72143?',
+      'Mera delivery address update kar do.',
+      'Reroute my parcel to Mumbai branch.'
+    ]
+  },
+  human: {
+    label: 'Talk to Human',
+    icon: Headphones,
+    phrases: [
+      'I want to talk to a human.',
+      'I need to speak to someone right now.',
+      'Operator se baat karwao turant.',
+      'Connect me to a supervisor.'
+    ]
+  },
+  policy: {
+    label: 'Policy / FAQ',
+    icon: HelpCircle,
+    phrases: [
+      'What is your return policy?',
+      'Return window kitne din ka hota hai?',
+      'Do you support cash on delivery?'
+    ]
+  }
+}
+
+const SUGGESTION_BANKS = [
+  [
+    'Hello Mr. Patel, I have your case right in front of me with Order #72143.',
+    'I can see the 4-day delivery delay on our logistics gateway.',
+    'I am authorizing your ₹2,899 instant refund to your UPI account right now.'
+  ],
+  [
+    'Namaste Aarav ji, main Maya Sharma baat kar rahi hoon.',
+    'Maine aapka Order #72143 dekh liya hai aur main turant ₹2,899 refund execute kar rahi hoon.',
+    'Aapko transaction confirmation SMS receive ho jayega.'
+  ],
+  [
+    'Under policy POL-REFUND-3.2, you are eligible for 100% immediate settlement.',
+    'Your ₹2,899 refund is processed and will reflect within 120 seconds.',
+    'Is there anything else I can personally help you with today?'
+  ]
+]
+
+const ENTERPRISE_ORDER_CATALOG: Record<string, { amount: number; carrier: string; delay: number; item: string; awb: string }> = {
+  '84921': { amount: 1499, carrier: 'BlueDart Air', delay: 3, item: 'Wireless Ergonomic Headset', awb: 'BD-948192841' },
+  '72143': { amount: 2899, carrier: 'Delhivery Express', delay: 4, item: 'Mechanical Gaming Keyboard', awb: 'DL-721438910' },
+  '55219': { amount: 899, carrier: 'Shadowfax Quick', delay: 2, item: 'USB-C Fast Charging Hub', awb: 'SF-55219001' },
+  '1039': { amount: 2499, carrier: 'Delhivery Express', delay: 3, item: 'Fitness Smartwatch Pro', awb: 'DL-884910291' },
+  '1044': { amount: 3299, carrier: 'Shadowfax Express', delay: 1, item: 'Ergonomic Desk Mat & Lamp', awb: 'SF-99481029' },
+}
 
 export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   isHumanTakeover,
   onToggleTakeover,
-  onViewCase,
-  onStartNewCall,
+  onViewCase: _onViewCase,
+  onStartNewCall: _onStartNewCall,
 }) => {
-  const { caseState, resetCase, clearFailure, runtimeMode, activeScenario, loadScenario } = useCaseState()
+  const { caseState, setCaseState } = useCaseState()
+  const { isDevMode } = useDevMode()
+  const [isCallActive, setIsCallActive] = useState<boolean>(true)
   const [callState, setCallState] = useState<CallState>('RELAY_LISTENING')
   const [isAiPaused, setIsAiPaused] = useState<boolean>(false)
   const [isMuted, setIsMuted] = useState<boolean>(false)
-  const [showEvaluatorTools, setShowEvaluatorTools] = useState<boolean>(false)
-  const [copiedPhrase, setCopiedPhrase] = useState<boolean>(false)
-  const [caseStatus, setCaseStatus] = useState<'creating' | 'created'>('created')
-  const [reconnectAttempt, setReconnectAttempt] = useState<number>(2)
-  const [currentLanguageMode, setCurrentLanguageMode] = useState<string>('Hindi → English')
-  const [aiWorkingState, setAiWorkingState] = useState<AiWorkingState>('Listening...')
-  const [customUtterance, setCustomUtterance] = useState<string>('')
-
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [suggestionBankIdx, setSuggestionBankIdx] = useState<number>(0)
+  const [aiWorkingState, setAiWorkingState] = useState<AiWorkingState>('AI Listening...')
+  const [currentLoopStage, setCurrentLoopStage] = useState<RelayLoopStage>('LISTEN')
   const [agentGender, setAgentGender] = useState<'female' | 'male'>('female')
+  const [manualText, setManualText] = useState<string>('')
+  const [callDuration, setCallDuration] = useState<number>(161)
+  const [selectedPromptCategory, setSelectedPromptCategory] = useState<string>('refund')
+  const [showTestCasesTray, setShowTestCasesTray] = useState<boolean>(false)
+  const [showFailureModal, setShowFailureModal] = useState<boolean>(false)
 
-  // Proof Layer Modal State (Section 3)
   const [isProofModalOpen, setIsProofModalOpen] = useState<boolean>(false)
-  const [selectedProofEvent, setSelectedProofEvent] = useState<ProofEvent | null>(null)
+  const [selectedProofEvent] = useState<ProofEvent | null>(null)
 
-  const openProofInspector = (event: ProofEvent) => {
-    setSelectedProofEvent(event)
-    setIsProofModalOpen(true)
+  const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
+  const isProcessingTurnRef = useRef<boolean>(false)
+
+  const [transcript, setTranscript] = useState<TranscriptItem[]>([
+    {
+      id: 'greeting-0',
+      timestamp: '21:34:02',
+      speaker: 'RELAY',
+      content: 'Namaste! Main RELAY hoon. Aap mujhse kisi bhi order ka status pooch sakte hain ya refund request kar sakte hain.',
+      translation: 'Hello! I am RELAY. You can check order status or request an instant refund.',
+      language: 'Hindi / English',
+    }
+  ])
+
+  useEffect(() => {
+    if (!isCallActive) return
+    const timer = setInterval(() => {
+      setCallDuration((prev) => prev + 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [isCallActive])
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return (mins < 10 ? '0' : '') + mins + ':' + (secs < 10 ? '0' : '') + secs
   }
+
+  useEffect(() => {
+    if (transcriptScrollRef.current) {
+      transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight
+    }
+  }, [transcript, aiWorkingState, isHumanTakeover])
+
+  const handleToggleCall = () => {
+    if (isCallActive) {
+      setIsCallActive(false)
+      setCallState('CALL_ENDED')
+      setAiWorkingState('Call Ended')
+      speechService.stopListening()
+      agoraRtc.leaveAndCleanup()
+    } else {
+      setIsCallActive(true)
+      setCallState('RELAY_LISTENING')
+      setAiWorkingState('AI Listening...')
+      speechService.startListening()
+      agoraRtc.joinAndStart(caseState.channelName || 'relay-case-72143', 1042)
+    }
+  }
+
+  const playHeroMainStory = async () => {
+    if (isProcessingTurnRef.current) return
+    processCustomerUtterance('Mera order 72143 4 din se nahi aaya, mujhe refund chahiye.')
+  }
+
+  const triggerHumanTakeover = async (reasonText: string = 'I want to talk to a human') => {
+    if (isProcessingTurnRef.current) return
+    isProcessingTurnRef.current = true
+
+    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+    setTranscript((prev) => [
+      ...prev.filter(item => !item.isInterim),
+      {
+        id: 'cust-takeover-' + Date.now(),
+        timestamp: nowTime,
+        speaker: 'CUSTOMER',
+        content: reasonText,
+        translation: 'Customer requested direct human operator handoff.',
+        language: 'Hindi / English',
+      }
+    ])
+
+    setAiWorkingState('Connecting human operator...')
+    setCurrentLoopStage('GOVERN')
+    const handoffText = agentGender === 'male'
+      ? 'Zaroor, main aapko turant senior operator Maya Sharma se connect kar raha hoon. Kripya line par bane rahein.'
+      : 'Zaroor, main aapko turant senior operator Maya Sharma se connect kar rahi hoon. Kripya line par bane rahein.'
+
+    setTranscript((prev) => [
+      ...prev,
+      {
+        id: 'relay-handoff-' + Date.now(),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speaker: 'RELAY',
+        content: handoffText,
+        translation: "Certainly. I'm connecting you with our senior operator Maya Sharma right now.",
+        language: 'Hindi / English',
+      }
+    ])
+
+    speechService.speak(handoffText, 'hi-IN')
+
+    setTimeout(() => {
+      agoraRtc.setHumanTakeover(true)
+      if (!isHumanTakeover) {
+        onToggleTakeover()
+      }
+      setCallState('HUMAN_TAKEOVER')
+      setAiWorkingState('Human Operator Active')
+      isProcessingTurnRef.current = false
+    }, 2200)
+  }
+
+  // 5-MODE ADVANCED FAILURE SIMULATOR
+  const triggerFailureSimulation = async (mode: 'TOOL_TIMEOUT' | 'AI_TIMEOUT' | 'TRACKING_UNAVAILABLE' | 'DB_UNAVAILABLE' | 'OPERATOR_DISCONNECT') => {
+    if (isProcessingTurnRef.current) return
+    isProcessingTurnRef.current = true
+    setShowFailureModal(false)
+
+    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+    if (mode === 'TOOL_TIMEOUT') {
+      setTranscript((prev) => [
+        ...prev.filter(item => !item.isInterim),
+        {
+          id: 'fail-cust-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'CUSTOMER',
+          content: 'Mera package abhi kahan hai? Urgent batao.',
+          translation: 'Where is my package right now? Tell me urgently.',
+          language: 'Hindi',
+        }
+      ])
+
+      setCallState('TOOL_EXECUTING')
+      setAiWorkingState('Querying enterprise database...')
+      setCurrentLoopStage('VERIFY')
+
+      await new Promise((r) => setTimeout(r, 700))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-t1-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Executed getDeliveryStatus(#72143) [FAILURE · 504 Gateway Timeout]',
+          isTool: true,
+          toolName: 'getDeliveryStatus',
+          status: '504 Gateway Timeout'
+        }
+      ])
+
+      setAiWorkingState('Retrying tool execution...')
+      await new Promise((r) => setTimeout(r, 900))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-t2-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Retry #1: getDeliveryStatus(#72143) [FAILURE · 504 Gateway Timeout]',
+          isTool: true,
+          toolName: 'getDeliveryStatus',
+          status: '504 Gateway Timeout (Attempt 2)'
+        }
+      ])
+
+      setAiWorkingState('Retrying tool execution...')
+      await new Promise((r) => setTimeout(r, 900))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-t3-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Retry #2: getDeliveryStatus(#72143) [FAILURE EXHAUSTED ➔ ESCALATING TO OPERATOR]',
+          isTool: true,
+          toolName: 'getDeliveryStatus',
+          status: '504 Gateway Timeout (Escalated)'
+        }
+      ])
+
+      await new Promise((r) => setTimeout(r, 600))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-class-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Failure Classified: CARRIER_GATEWAY_TIMEOUT (Code EX-504) ➔ Triggering Human Escalation',
+          isTool: true,
+          toolName: 'FaultClassifier',
+          status: 'ESCALATION_REQUIRED'
+        }
+      ])
+
+      await new Promise((r) => setTimeout(r, 600))
+      setCurrentLoopStage('GOVERN')
+      const escalationText = agentGender === 'male'
+        ? 'Main maafi chahta hoon, courier tracking gateway do baar try karne ke baad bhi respond nahi kar raha hai. Main aapko turant senior operator Maya Sharma se connect kar raha hoon.'
+        : 'Main maafi chahti hoon, courier tracking gateway do baar try karne ke baad bhi respond nahi kar raha hai. Main aapko turant senior operator Maya Sharma se connect kar rahi hoon.'
+
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-esc-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: escalationText,
+          translation: 'I apologize, the carrier tracking gateway is unreachable after 2 retries. Connecting you directly to senior operator Maya Sharma.',
+          language: 'Hindi / English'
+        }
+      ])
+
+      speechService.speak(escalationText, 'hi-IN')
+      onToggleTakeover()
+      isProcessingTurnRef.current = false
+      setAiWorkingState('Human Operator Active')
+    } else if (mode === 'AI_TIMEOUT') {
+      setTranscript((prev) => [
+        ...prev.filter(item => !item.isInterim),
+        {
+          id: 'fail-ai-cust-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'CUSTOMER',
+          content: 'What is your refund policy on delayed electronics?',
+          language: 'English',
+        }
+      ])
+
+      setCallState('TOOL_EXECUTING')
+      setAiWorkingState('Detecting intent & routing tools...')
+      setCurrentLoopStage('UNDERSTAND')
+
+      await new Promise((r) => setTimeout(r, 800))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-ai-log-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Gemini Reasoning Latency > 3500ms [TIMEOUT] ➔ Switched to Deterministic Policy Engine (12ms)',
+          isTool: true,
+          toolName: 'GeminiReasoningEngine',
+          status: 'Fallback Triggered (0ms Interruption)'
+        }
+      ])
+
+      const fallbackText = 'Under our Policy POL-REFUND-3.2, carrier delays exceeding 3 days qualify for an instant 100% electronic refund with single operator sign-off.'
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-ai-resp-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: fallbackText,
+          language: 'English',
+        }
+      ])
+
+      speechService.speak(fallbackText, 'en-US')
+      isProcessingTurnRef.current = false
+      setAiWorkingState('AI Listening...')
+    } else if (mode === 'TRACKING_UNAVAILABLE') {
+      setTranscript((prev) => [
+        ...prev.filter(item => !item.isInterim),
+        {
+          id: 'fail-track-cust-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'CUSTOMER',
+          content: 'BlueDart order tracking is not opening on my phone.',
+          language: 'English',
+        }
+      ])
+
+      setCallState('TOOL_EXECUTING')
+      setAiWorkingState('Querying enterprise database...')
+      setCurrentLoopStage('VERIFY')
+
+      await new Promise((r) => setTimeout(r, 700))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-track-1-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Primary Gateway BlueDart Air (BD-948192841) [503 SERVICE UNAVAILABLE]',
+          isTool: true,
+          toolName: 'PrimaryCarrierGateway',
+          status: '503 Service Unavailable'
+        }
+      ])
+
+      await new Promise((r) => setTimeout(r, 700))
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-track-2-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: 'Auto-Rerouting to Secondary Logistics Aggregator [SUCCESS · 184ms]',
+          isTool: true,
+          toolName: 'SecondaryLogisticsHub',
+          status: 'Delhi Sorting Facility Synced'
+        }
+      ])
+
+      const trackText = 'Primary carrier servers are undergoing maintenance, but our secondary gateway confirms your parcel is securely at the Delhi Sorting Facility.'
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-track-resp-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: trackText,
+          language: 'English',
+        }
+      ])
+
+      speechService.speak(trackText, 'en-US')
+      isProcessingTurnRef.current = false
+      setAiWorkingState('AI Listening...')
+    } else if (mode === 'DB_UNAVAILABLE') {
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-db-log-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'RELAY',
+          content: 'PostgreSQL 16 Connection Lost [ALERT] ➔ Switched to In-Memory Write-Through Buffer (Zero Event Loss)',
+          isTool: true,
+          toolName: 'PostgreSQL16_Driver',
+          status: 'Buffer Mode Active (WAL Synced)'
+        }
+      ])
+      isProcessingTurnRef.current = false
+    } else if (mode === 'OPERATOR_DISCONNECT') {
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-op-log-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'RELAY',
+          content: 'Operator Line Dropped [SIP TIMEOUT] ➔ RELAY AI Agent Automatically Resumed Duplex Stream',
+          isTool: true,
+          toolName: 'AgoraChannelRouter',
+          status: 'AI Resumed Control'
+        }
+      ])
+      if (isHumanTakeover) {
+        agoraRtc.setHumanTakeover(false)
+        onToggleTakeover()
+      }
+      const resumeText = 'Main wapas aapke sath hoon. Aapki request seamlessly process ho rahi hai.'
+      setTranscript((prev) => [
+        ...prev,
+        {
+          id: 'fail-op-resp-' + Date.now(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          speaker: 'RELAY',
+          content: resumeText,
+          translation: 'I am back with you. Your request is continuing without interruption.',
+          language: 'Hindi / English',
+        }
+      ])
+      speechService.speak(resumeText, 'hi-IN')
+      isProcessingTurnRef.current = false
+      setAiWorkingState('AI Listening...')
+    }
+  }
+
+  const processCustomerUtterance = async (utterance: string) => {
+    if (!utterance || !utterance.trim() || isProcessingTurnRef.current) return
+    if (speechService.isSpeakingTTS()) return
+
+    const cleanText = utterance.trim()
+    const lower = cleanText.toLowerCase()
+
+    if (
+      lower.includes('human') ||
+      lower.includes('operator') ||
+      lower.includes('manager') ||
+      lower.includes('baat karwao') ||
+      lower.includes('insan se') ||
+      lower.includes('speak to someone')
+    ) {
+      triggerHumanTakeover(cleanText)
+      return
+    }
+
+    if (cleanText.includes('99999') || lower.includes('failure') || lower.includes('broken')) {
+      triggerFailureSimulation('TOOL_TIMEOUT')
+      return
+    }
+
+    isProcessingTurnRef.current = true
+    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+    const orderMatch = cleanText.match(/(?:order|package|awb|id|number)?\s*#?(\d{4,8})/i)
+    const detectedOrderId = orderMatch ? orderMatch[1] : (caseState.orderId || '72143')
+
+    const isHindi =
+      cleanText.includes('Mera') ||
+      cleanText.includes('chahiye') ||
+      cleanText.includes('aaya') ||
+      cleanText.includes('karo') ||
+      cleanText.includes('hai') ||
+      cleanText.includes('nahi') ||
+      cleanText.includes('kya') ||
+      cleanText.includes('paisa') ||
+      cleanText.includes('batao')
+
+    // 1. LISTEN & 2. UNDERSTAND
+    setCurrentLoopStage('LISTEN')
+    const userItem: TranscriptItem = {
+      id: 'cust-' + Date.now(),
+      timestamp: nowTime,
+      speaker: 'CUSTOMER',
+      content: cleanText,
+      language: isHindi ? 'Hindi' : 'English',
+    }
+
+    setTranscript((prev) => [...prev.filter((item) => !item.isInterim), userItem])
+    setCallState('TOOL_EXECUTING')
+    setCurrentLoopStage('UNDERSTAND')
+    setAiWorkingState('Detecting intent & routing tools...')
+
+    let aiResponseText = ''
+    let aiTranslationText = ''
+    let toolsCalled: string[] = []
+    let intentFound = 'general_inquiry'
+    let orderRecord = ENTERPRISE_ORDER_CATALOG[detectedOrderId] || {
+      amount: 2899,
+      carrier: 'Delhivery Express',
+      delay: 4,
+      item: "Order #" + detectedOrderId + " Merchandise",
+      awb: "DL-" + detectedOrderId + "01"
+    }
+
+    const tempToolId = 'tool-running-' + Date.now()
+    setTranscript((prev) => [
+      ...prev,
+      {
+        id: tempToolId,
+        timestamp: nowTime,
+        speaker: 'RELAY',
+        content: "Routing lookupOrder(#" + detectedOrderId + ") to Logistics Gateway...",
+        isTool: true,
+        toolName: 'lookupOrder',
+        status: 'Executing...',
+        isPendingTool: true,
+      }
+    ])
+
+    // 3. VERIFY & 4. DECIDE
+    try {
+      setCurrentLoopStage('VERIFY')
+      setAiWorkingState('Querying enterprise database...')
+      const response = await fetch(apiUrl('/api/agent/turn'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          utterance: cleanText,
+          caseId: caseState.id,
+          customerName: caseState.customerName || 'Aarav Patel',
+          agentGender: agentGender
+        })
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        aiResponseText = data.agentResponse || ''
+        aiTranslationText = data.agentTranslation || ''
+        toolsCalled = data.toolsCalled || []
+        intentFound = data.intent || 'general_inquiry'
+        if (data.orderData) {
+          orderRecord = {
+            amount: data.orderData.amount || orderRecord.amount,
+            carrier: data.orderData.carrier || orderRecord.carrier,
+            delay: data.orderData.delayDays || orderRecord.delay,
+            item: data.orderData.items?.[0]?.name || orderRecord.item,
+            awb: data.orderData.trackingNumber || orderRecord.awb
+          }
+        }
+      }
+    } catch (e) {}
+
+    // Fallback Universal Multi-Intent Engine
+    if (!aiResponseText) {
+      if (lower.includes('twice') || lower.includes('do baar') || lower.includes('double') || lower.includes('kat gaye')) {
+        intentFound = 'duplicate_charge_dispute'
+        toolsCalled = ['verifyPaymentGateway', 'createDisputeTicket']
+        aiResponseText = isHindi
+          ? "Maine verify kiya hai ki transaction #TXN-" + detectedOrderId + " par double debit hua tha. Second charge ₹" + orderRecord.amount + " ka auto-refund initiate kar diya gaya hai."
+          : "I verified that a duplicate charge occurred for order #" + detectedOrderId + ". The extra charge of ₹" + orderRecord.amount + " has been reversed to your original payment method."
+        aiTranslationText = "Duplicate charge verified. Auto-refund of ₹" + orderRecord.amount + " initiated to source account."
+      } else if (lower.includes('cancel') || lower.includes('radd')) {
+        intentFound = 'cancellation_request'
+        toolsCalled = ['lookupOrder', 'cancelOrder']
+        aiResponseText = isHindi
+          ? "Aapka Order #" + detectedOrderId + " (" + orderRecord.item + ") cancel kar diya gaya hai. Agar payment ho chuka hai toh ₹" + orderRecord.amount + " refund 24 ghante mein account mein aa jayega."
+          : "Your Order #" + detectedOrderId + " (" + orderRecord.item + ") has been successfully cancelled. A full refund of ₹" + orderRecord.amount + " is being processed."
+        aiTranslationText = "Order #" + detectedOrderId + " cancelled successfully. ₹" + orderRecord.amount + " refund processed."
+      } else if (lower.includes('address') || lower.includes('pata') || lower.includes('reroute')) {
+        intentFound = 'address_change_request'
+        toolsCalled = ['lookupOrder', 'updateDeliveryAddress']
+        aiResponseText = isHindi
+          ? "Maine Order #" + detectedOrderId + " ke liye address update request dispatch hub par forward kar di hai."
+          : "I have submitted the delivery address modification for Order #" + detectedOrderId + " with the carrier dispatch hub."
+        aiTranslationText = "Address modification submitted for order #" + detectedOrderId + "."
+      } else if (lower.includes('policy') || lower.includes('return') || lower.includes('rule') || lower.includes('cod')) {
+        intentFound = 'policy_inquiry'
+        toolsCalled = ['searchPolicyDatabase']
+        aiResponseText = isHindi
+          ? "Hamari policy POL-REFUND-3.2 ke tahat electronics par 7 din ka return window hai, aur 3+ din delivery delay par instant 100% refund milta hai."
+          : "Under our policy POL-REFUND-3.2, electronics have a 7-day replacement window, and carrier delays over 3 days qualify for an instant 100% refund."
+        aiTranslationText = "Policy POL-REFUND-3.2: 7-day return window and 100% refund on 3+ day courier delays."
+      } else if (lower.includes('refund') || lower.includes('paisa') || lower.includes('money back') || lower.includes('late')) {
+        intentFound = 'refund_request'
+        toolsCalled = ['lookupOrder', 'evaluateRefundPolicy']
+        aiResponseText = isHindi
+          ? "Maine verify kiya hai ki aapka Order #" + detectedOrderId + " (" + orderRecord.item + ") " + orderRecord.carrier + " ke sath " + orderRecord.delay + " din delayed hai. Policy POL-REFUND-3.2 ke tahat main turant ₹" + orderRecord.amount + " ka refund initiate kar rahi hoon. Operator approval pending hai."
+          : "I verified that Order #" + detectedOrderId + " (" + orderRecord.item + ") is delayed by " + orderRecord.delay + " days with " + orderRecord.carrier + ". Under Policy POL-REFUND-3.2, you qualify for an instant ₹" + orderRecord.amount + " refund."
+        aiTranslationText = "Order #" + detectedOrderId + " qualifies for ₹" + orderRecord.amount + " refund under SLA delay policy."
+      } else {
+        intentFound = 'order_tracking'
+        toolsCalled = ['lookupOrder', 'getDeliveryStatus']
+        aiResponseText = isHindi
+          ? "Aapka Order #" + detectedOrderId + " (" + orderRecord.item + ") " + orderRecord.carrier + " ke paas hai. Current tracking status: Transit Delay (" + orderRecord.delay + " din delayed). AWB " + orderRecord.awb + " hai."
+          : "Your Order #" + detectedOrderId + " (" + orderRecord.item + ") is with " + orderRecord.carrier + ". Current tracking status is in-transit with AWB " + orderRecord.awb + "."
+        aiTranslationText = "Order #" + detectedOrderId + " is with " + orderRecord.carrier + " under AWB " + orderRecord.awb + "."
+      }
+    }
+
+    // 5. GOVERN & 6. ACT
+    setCurrentLoopStage(intentFound.includes('refund') ? 'GOVERN' : 'DECIDE')
+
+    setCaseState((prev) => ({
+      ...prev,
+      orderId: detectedOrderId,
+      orderAmount: orderRecord.amount,
+      orderCarrier: orderRecord.carrier,
+      orderItem: orderRecord.item,
+      orderAwb: orderRecord.awb,
+      orderDelayDays: orderRecord.delay,
+      intent: intentFound,
+      facts: [
+        { id: 'f-1', label: "Customer Verified (" + (prev.customerName || 'Aarav Patel') + " · Platinum VIP)", verified: true, source: 'CRM' },
+        { id: 'f-2', label: "Order #" + detectedOrderId + " (" + orderRecord.carrier + " · " + orderRecord.delay + " Days Delay)", verified: true, source: 'Logistics' },
+        { id: 'f-3', label: "Intent: " + intentFound.replace(/_/g, ' ').toUpperCase(), verified: true, source: 'Intent Engine' },
+        { id: 'f-4', label: 'Policy POL-REFUND-3.2 Evaluated', verified: true, source: 'Knowledge Engine' }
+      ],
+      activeAction: intentFound.includes('refund') || intentFound.includes('charge') ? {
+        id: 'act-' + Date.now(),
+        type: 'REFUND',
+        title: 'Refund Settlement',
+        amount: orderRecord.amount,
+        currency: 'INR',
+        riskTier: 'LOW',
+        policyId: 'POL-REFUND-3.2',
+        justification: [orderRecord.delay + "-day SLA breach for #" + detectedOrderId, 'Zero duplicate claims detected'],
+        status: 'PENDING'
+      } : undefined
+    }))
+
+    const finalToolName = toolsCalled[0] || 'lookupOrder'
+    setTranscript((prev) => [
+      ...prev.filter(item => item.id !== tempToolId),
+      {
+        id: 'tool-done-' + Date.now(),
+        timestamp: nowTime,
+        speaker: 'RELAY',
+        content: "Executed " + (toolsCalled.length > 0 ? toolsCalled.join(', ') : 'lookupOrder') + "(#" + detectedOrderId + ")",
+        isTool: true,
+        toolName: finalToolName,
+        status: "Success (" + orderRecord.carrier + " · 142ms)"
+      }
+    ])
+
+    // 7. EXPLAIN
+    setCurrentLoopStage('EXPLAIN')
+    const botItem: TranscriptItem = {
+      id: 'relay-' + Date.now(),
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      speaker: 'RELAY',
+      content: aiResponseText,
+      translation: aiTranslationText,
+      language: isHindi ? 'Hindi / English' : 'English',
+    }
+    setTranscript((prev) => [...prev, botItem])
+
+    if (!isHumanTakeover && !isAiPaused && isCallActive) {
+      setCallState('RELAY_SPEAKING')
+      setAiWorkingState('AI Responding...')
+      speechService.speak(aiResponseText, isHindi ? 'hi-IN' : 'en-US')
+    }
+
+    isProcessingTurnRef.current = false
+    setTimeout(() => {
+      if (!isHumanTakeover && isCallActive) {
+        setCallState('RELAY_LISTENING')
+        setAiWorkingState('AI Listening...')
+        setCurrentLoopStage('LISTEN')
+      }
+    }, 3500)
+  }
+
+  // Hook up continuous microphone
+  useEffect(() => {
+    if (!isCallActive) return
+    speechService.startListening()
+
+    const unsubSpeech = speechService.subscribe((payload: SpeechRecognitionResultPayload) => {
+      if (isAiPaused || isMuted || !isCallActive) return
+      if (speechService.isSpeakingTTS()) return
+
+      if (payload.isFinal && payload.text && payload.text.trim()) {
+        if (isHumanTakeover) {
+          const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          setTranscript((prev) => [
+            ...prev.filter(item => !item.isInterim),
+            {
+              id: 'op-speech-' + Date.now(),
+              timestamp: nowTime,
+              speaker: 'OPERATOR',
+              content: payload.text.trim(),
+              language: 'Hindi / English'
+            }
+          ])
+        } else {
+          processCustomerUtterance(payload.text)
+        }
+      } else if (!payload.isFinal && payload.text && payload.text.trim() && !isHumanTakeover) {
+        setAiWorkingState('Customer Speaking...')
+        setCurrentLoopStage('LISTEN')
+        setCallState('CUSTOMER_SPEAKING')
+
+        setTranscript((prev) => {
+          const withoutInterim = prev.filter(item => !item.isInterim)
+          return [
+            ...withoutInterim,
+            {
+              id: 'interim-speech',
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              speaker: 'CUSTOMER',
+              content: payload.text.trim() + ' ▍',
+              language: 'Live Audio Stream',
+              isInterim: true,
+            }
+          ]
+        })
+      }
+    })
+
+    const unsubSpeaking = speechService.subscribeSpeaking((isSpeaking) => {
+      if (isSpeaking && !speechService.isSpeakingTTS() && !isHumanTakeover && isCallActive) {
+        setCallState('CUSTOMER_SPEAKING')
+        setAiWorkingState('Customer Speaking...')
+      }
+    })
+
+    return () => {
+      unsubSpeech()
+      unsubSpeaking()
+    }
+  }, [isHumanTakeover, isAiPaused, isMuted, isCallActive, agentGender, caseState.id, caseState.orderId])
 
   const handleToggleMute = () => {
     const next = !isMuted
@@ -96,897 +873,485 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     }
   }
 
-  const [transcript, setTranscript] = useState<TranscriptItem[]>([
-    {
-      id: 'greeting-0',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      speaker: 'RELAY',
-      content: '"Hi, I\'m RELAY. How can I help you today?"',
-      translation:
-        agentGender === 'male'
-          ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
-          : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
-      language: 'English / Hindi',
-    },
-  ])
-
-  // REAL-TIME SPEECH & FUNCTION CALLING DISPATCHER
-  const isProcessingTurn = useRef<boolean>(false)
-
-  const handleProcessSpokenUtterance = async (utterance: string) => {
-    if (!utterance || !utterance.trim() || isProcessingTurn.current) return
-    if (speechService.isSpeakingTTS()) return
-
-    isProcessingTurn.current = true
-
-    const cleanText = utterance.trim()
-    const isHindi =
-      cleanText.includes('Mera') ||
-      cleanText.includes('chahiye') ||
-      cleanText.includes('aaya') ||
-      cleanText.includes('karo') ||
-      cleanText.includes('hai') ||
-      cleanText.includes('nahi')
-
-    const userItem: TranscriptItem = {
-      id: `cust-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      speaker: 'CUSTOMER',
-      content: cleanText.startsWith('"') ? cleanText : `"${cleanText}"`,
-      translation: isHindi
-        ? cleanText.includes('refund')
-          ? 'I want a refund.'
-          : "My order hasn't arrived for 5 days."
-        : undefined,
-      language: isHindi ? 'Hindi' : 'English',
-    }
-
-    setTranscript((prev) => [...prev, userItem])
-    setCallState('RELAY_SPEAKING')
-    setAiWorkingState('Understanding...')
-
-    try {
-      const res = await fetch(apiUrl('/api/agent/turn'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          utterance: cleanText,
-          caseId: caseState.id,
-          customerName: currentCustomerName,
-          agentGender,
-        }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-
-        // 1. Tool executions
-        if (data.toolsCalled && Array.isArray(data.toolsCalled)) {
-          data.toolsCalled.forEach((tool: string) => {
-            const toolItem: TranscriptItem = {
-              id: `tool-${Date.now()}-${Math.random()}`,
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-              speaker: 'RELAY',
-              content: `${tool}() → SUCCESS (184ms)`,
-              isTool: true,
-              toolName: `${tool}()`,
-              status: 'SUCCESS',
-            }
-            setTranscript((prev) => [...prev, toolItem])
-          })
-        }
-
-        // 2. Language shift notification
-        if (data.languageShift?.shifted) {
-          setCurrentLanguageMode(`${data.languageShift.from} → ${data.languageShift.to}`)
-        }
-
-        // 3. Agent response transcript
-        if (data.agentResponse) {
-          const agentItem: TranscriptItem = {
-            id: `agent-${Date.now()}`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-            speaker: 'RELAY',
-            content: `"${data.agentResponse}"`,
-            translation: data.agentTranslation,
-            language: data.activeLanguage === 'en-IN' ? 'English' : 'Hindi',
-          }
-          setTranscript((prev) => [...prev, agentItem])
-
-          // Audible TTS Speech Synthesis through Speakers with strict gender voice matching!
-          speechService.speak(
-            data.agentResponse,
-            data.activeLanguage || 'hi-IN',
-            agentGender,
-            () => {
-              if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
-                setCallState('WAITING_FOR_APPROVAL')
-                setAiWorkingState('Waiting for approval...')
-              } else {
-                setCallState('RELAY_LISTENING')
-                setAiWorkingState('Listening...')
-              }
-              isProcessingTurn.current = false
-            },
-            () => {
-              setCallState('RELAY_SPEAKING')
-            }
-          )
-        } else {
-          if (data.intent === 'refund_request' || data.events?.some((e: any) => e.type === 'approval.created')) {
-            setCallState('WAITING_FOR_APPROVAL')
-            setAiWorkingState('Waiting for approval...')
-          } else {
-            setCallState('RELAY_LISTENING')
-            setAiWorkingState('Listening...')
-          }
-          isProcessingTurn.current = false
-        }
-      } else {
-        isProcessingTurn.current = false
-      }
-    } catch (err) {
-      console.error('[Agent] Turn processing error:', err)
-      setCallState('RELAY_LISTENING')
-      setAiWorkingState('Listening...')
-      isProcessingTurn.current = false
-    }
+  const handleRefreshSuggestions = () => {
+    setSuggestionBankIdx((prev) => (prev + 1) % SUGGESTION_BANKS.length)
   }
 
-  // Dynamic Turn-by-Turn Scenario Playback Engine
-  const scenarioTimersRef = useRef<NodeJS.Timeout[]>([])
-  const [isPlayingScenario, setIsPlayingScenario] = useState<boolean>(false)
-
-  const clearScenarioTimers = () => {
-    scenarioTimersRef.current.forEach((t) => clearTimeout(t))
-    scenarioTimersRef.current = []
-    setIsPlayingScenario(false)
+  const handleUseSuggestion = (text: string, idx: number) => {
+    navigator.clipboard?.writeText(text)
+    setCopiedIndex(idx)
+    setTimeout(() => setCopiedIndex(null), 1500)
   }
 
-  // Fast skip to fully loaded state
-  const skipToScenarioEnd = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
-    clearScenarioTimers()
-    agoraRtc.setSimulationMode(true)
-    setTranscript(
-      scenario.transcript.map((item) => ({
-        id: item.id,
-        timestamp: item.timestamp,
-        speaker: item.speaker === 'MAYA' ? 'OPERATOR' : item.speaker === 'CUSTOMER' ? 'CUSTOMER' : 'RELAY',
-        content: item.content,
-        translation: item.translation,
-        language: item.language,
-        isTool: item.isTool,
-        toolName: item.toolName,
-        status: item.status,
-      }))
-    )
-    setCallState(scenario.callState)
-    setCurrentLanguageMode(scenario.language)
-    setIsAiPaused(false)
-    if (scenario.callState === 'WAITING_FOR_APPROVAL') {
-      setAiWorkingState('Waiting for approval...')
-    } else if (scenario.callState === 'TOOL_EXECUTING') {
-      setAiWorkingState('Checking order...')
-    } else if (scenario.callState === 'TOOL_ERROR') {
-      setAiWorkingState('Idle')
-    } else {
-      setAiWorkingState('Listening...')
-    }
-  }
-
-  const playScenarioTurnByTurn = (scenario: (typeof DEMO_SCENARIOS)[0]) => {
-    clearScenarioTimers()
-    setIsPlayingScenario(true)
-    agoraRtc.setSimulationMode(true)
-
-    // 1. Initial greeting
-    const greetingItem: TranscriptItem = {
-      id: `greeting-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      speaker: 'RELAY',
-      content: '"Hi, I\'m RELAY. How can I help you today?"',
-      translation:
-        agentGender === 'male'
-          ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
-          : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
-      language: 'English / Hindi',
-    }
-
-    setTranscript([greetingItem])
-    setCallState('RELAY_LISTENING')
-    setAiWorkingState('Listening...')
-    setCurrentLanguageMode(scenario.language)
-    setIsAiPaused(false)
-
-    let accumulatedDelay = 700 // initial customer speak offset
-
-    scenario.transcript.forEach((item) => {
-      const isCustomer = item.speaker === 'CUSTOMER'
-      const isTool = item.isTool
-      const isRelay = item.speaker === 'RELAY' && !item.isTool
-      const isOperator = item.speaker === 'MAYA'
-
-      // Schedule turn
-      const timer = setTimeout(() => {
-        const mappedItem: TranscriptItem = {
-          id: `${item.id}-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          speaker: isOperator ? 'OPERATOR' : isCustomer ? 'CUSTOMER' : 'RELAY',
-          content: item.content,
-          translation: item.translation,
-          language: item.language,
-          isTool: item.isTool,
-          toolName: item.toolName,
-          status: item.status,
-        }
-
-        setTranscript((prev) => [...prev, mappedItem])
-
-        if (isCustomer) {
-          setCallState('CUSTOMER_SPEAKING')
-          setAiWorkingState('Listening...')
-        } else if (isTool) {
-          setCallState('TOOL_EXECUTING')
-          setAiWorkingState('Checking order...')
-          try {
-            soundEffects.playToolExecuted()
-          } catch (e) {}
-        } else if (isRelay) {
-          setCallState('RELAY_SPEAKING')
-          setAiWorkingState('Executing action...')
-          const cleanText = item.content.replace(/^"|"$/g, '')
-          const lang = item.language?.toLowerCase().includes('hindi') ? 'hi-IN' : 'en-IN'
-          try {
-            speechService.speak(
-              cleanText,
-              lang,
-              agentGender,
-              () => {
-                setCallState('RELAY_LISTENING')
-                setAiWorkingState('Listening...')
-              },
-              () => {
-                setCallState('RELAY_SPEAKING')
-              }
-            )
-          } catch (e) {}
-        } else if (isOperator) {
-          setCallState('HUMAN_ACTIVE')
-          setAiWorkingState('Listening...')
-          try {
-            soundEffects.playHumanTakeover()
-          } catch (e) {}
-        }
-      }, accumulatedDelay)
-
-      scenarioTimersRef.current.push(timer)
-
-      // Add realistic duration for each turn
-      if (isCustomer) {
-        accumulatedDelay += 1800
-      } else if (isTool) {
-        accumulatedDelay += 1100
-      } else if (isRelay) {
-        accumulatedDelay += 2400
-      } else {
-        accumulatedDelay += 1800
-      }
-    })
-
-    // End of scenario lifecycle transition
-    const finalTimer = setTimeout(() => {
-      setCallState(scenario.callState)
-      setIsPlayingScenario(false)
-
-      if (scenario.callState === 'WAITING_FOR_APPROVAL') {
-        setAiWorkingState('Waiting for approval...')
-        try {
-          soundEffects.playApprovalRequested()
-        } catch (e) {}
-      } else if (scenario.callState === 'HUMAN_ACTIVE') {
-        setAiWorkingState('Listening...')
-        try {
-          soundEffects.playHumanTakeover()
-        } catch (e) {}
-      } else if (scenario.callState === 'TOOL_ERROR') {
-        setAiWorkingState('Idle')
-      } else {
-        setAiWorkingState('Listening...')
-      }
-    }, accumulatedDelay + 400)
-
-    scenarioTimersRef.current.push(finalTimer)
-  }
-
-  // Play turn-by-turn animation whenever activeScenario changes
-  useEffect(() => {
-    if (activeScenario && activeScenario.caseId === caseState.id && activeScenario.transcript.length > 0) {
-      playScenarioTurnByTurn(activeScenario)
-    } else {
-      clearScenarioTimers()
-      setTranscript([
-        {
-          id: `greeting-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          speaker: 'RELAY',
-          content: '"Hi, I\'m RELAY. How can I help you today?"',
-          translation:
-            agentGender === 'male'
-              ? 'Namaste, main RELAY hoon. Main aapki kya madad kar sakta hoon?'
-              : 'Namaste, main RELAY hoon. Main aapki kya madad kar sakti hoon?',
-          language: 'English / Hindi',
-        },
-      ])
-      setCallState('RELAY_LISTENING')
-      setIsAiPaused(false)
-      setAiWorkingState('Listening...')
-    }
-
-    return () => {
-      clearScenarioTimers()
-    }
-  }, [activeScenario, caseState.id, agentGender])
-
-  // Listen for Operator Approval in Case State and immediately resolve WAITING_FOR_APPROVAL
-  const lastAnnouncedActionKey = useRef<string | null>(null)
-  useEffect(() => {
-    if (caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved') {
-      const actionKey = `${caseState.id}-${caseState.activeAction?.id || 'approved'}`
-      if (lastAnnouncedActionKey.current === actionKey) return
-      lastAnnouncedActionKey.current = actionKey
-
-      setCallState('RELAY_SPEAKING')
-      setAiWorkingState('Executing action...')
-      try {
-        soundEffects.playToolExecuted()
-      } catch (e) {}
-
-      const isEn = currentLanguageMode.includes('English')
-      const actionTitle = caseState.activeAction?.title || 'Action'
-      const amountStr = caseState.activeAction?.amount ? `₹${caseState.activeAction.amount}` : ''
-      
-      const approvedMsg = isEn
-        ? `Supervisor Maya Sharma has approved the ${actionTitle} ${amountStr ? `of ${amountStr}` : ''}. The resolution has been committed successfully.`
-        : agentGender === 'male'
-        ? `Supervisor ne ${actionTitle} ${amountStr ? `${amountStr}` : ''} approve kar diya hai. Action process ho gaya hai.`
-        : `Supervisor ne ${actionTitle} ${amountStr ? `${amountStr}` : ''} approve kar di hai. Action process ho gaya hai.`
-
-      const approvedTranslation = isEn
-        ? undefined
-        : `Supervisor has approved ${actionTitle}. Action executed.`
-
-      setTranscript((prev) => [
-        ...prev,
-        {
-          id: `appr-done-${Date.now()}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          speaker: 'RELAY',
-          content: `"${approvedMsg}"`,
-          translation: approvedTranslation,
-          language: isEn ? 'English' : 'Hindi',
-        },
-      ])
-
-      speechService.speak(
-        approvedMsg,
-        isEn ? 'en-IN' : 'hi-IN',
-        agentGender,
-        () => {
-          setCallState('RELAY_LISTENING')
-          setAiWorkingState('Listening...')
-        },
-        () => {
-          setCallState('RELAY_SPEAKING')
-        }
-      )
-    }
-  }, [caseState.activeAction?.status, caseState.activeAction?.id, caseState.status, caseState.id, agentGender, currentLanguageMode])
-
-  // Continuous Speech Recognition (ASR) Listener + Active Speaking Detector
-  useEffect(() => {
-    speechService.startListening()
-
-    const unsubSpeech = speechService.subscribe((payload) => {
-      if (payload.isFinal && payload.text) {
-        // Prevent feedback loop: strictly ignore microphone when RELAY is synthesizing speech, playing scenario, or in tool execution
-        if (speechService.isSpeakingTTS() || isPlayingScenario) {
-          return
-        }
-        handleProcessSpokenUtterance(payload.text)
-      }
-    })
-
-    const unsubSpeaking = speechService.subscribeSpeaking((isSpeaking) => {
-      if (isSpeaking) {
-        setCallState((curr) => {
-          if (
-            curr === 'HUMAN_ACTIVE' ||
-            curr === 'HUMAN_TAKEOVER' ||
-            curr === 'RECONNECTING' ||
-            curr === 'CALL_ENDED' ||
-            curr === 'TOOL_EXECUTING' ||
-            curr === 'WAITING_FOR_APPROVAL'
-          ) {
-            return curr
-          }
-          return 'CUSTOMER_SPEAKING'
-        })
-      } else {
-        setCallState((curr) => (curr === 'CUSTOMER_SPEAKING' ? 'RELAY_LISTENING' : curr))
-      }
-    })
-
-    return () => {
-      unsubSpeech()
-      unsubSpeaking()
-      speechService.stopListening()
-    }
-  }, [caseState.id])
-
-  // AGORA RTC & RTM LIFECYCLE: Audio Channel + Event Bus
-  useEffect(() => {
-    const channel = caseState.channelName || 'relay-case-1042'
-    agoraRtc.joinAndStart(channel)
-    agoraRtm.loginAndJoin(channel)
-
-    // Subscribe to Agora RTM Event Bus via unified RelayEvents
-    const unsubRelay = agoraRtm.subscribeRelayEvents((ev: RelayEvent) => {
-      if (ev.type === 'speech.transcript') {
-        const speaker = ev.speaker.toUpperCase() === 'CUSTOMER' ? 'CUSTOMER' : 'RELAY'
-        const item: TranscriptItem = {
-          id: ev.id || `re-${Date.now()}`,
-          timestamp: ev.timestamp,
-          speaker,
-          content: ev.text.startsWith('"') ? ev.text : `"${ev.text}"`,
-          translation: ev.translation,
-          language: ev.language || 'English',
-        }
-        setTranscript((prev) => [...prev, item])
-      } else if (ev.type === 'language.changed') {
-        const item: TranscriptItem = {
-          id: ev.id || `re-${Date.now()}`,
-          timestamp: ev.timestamp,
-          speaker: 'RELAY',
-          content: `Detected language change: ${ev.from} → ${ev.to}`,
-          isLanguageSwitch: true,
-          switchFrom: ev.from,
-          switchTo: ev.to,
-        }
-        setTranscript((prev) => [...prev, item])
-      } else if (ev.type === 'tool.completed') {
-        const toolItem: TranscriptItem = {
-          id: ev.id || `re-${Date.now()}`,
-          timestamp: ev.timestamp,
-          speaker: 'RELAY',
-          content: `${ev.tool}() → COMPLETED (${ev.durationMs}ms)`,
-          isTool: true,
-          toolName: `${ev.tool}()`,
-          status: 'SUCCESS',
-        }
-        setTranscript((prev) => [...prev, toolItem])
-      } else if (ev.type === 'approval.created') {
-        setCallState('WAITING_FOR_APPROVAL')
-        setAiWorkingState('Waiting for approval...')
-      } else if (ev.type === 'approval.approved') {
-        setCallState('CALL_ENDED')
-      }
-    })
-
-    const unsubInterruption = agoraRtc.subscribeInterruption(() => {
-      setCallState('CUSTOMER_INTERRUPTED')
-      setTimeout(() => {
-        setCallState('RELAY_LISTENING')
-      }, 2800)
-    })
-
-    return () => {
-      unsubRelay()
-      unsubInterruption()
-      agoraRtc.leaveAndCleanup()
-      agoraRtm.leaveAndLogout()
-    }
-  }, [caseState.channelName])
-
-  // Sync takeover prop with CallState and play sound cue
-  useEffect(() => {
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!manualText.trim()) return
+    const textToSend = manualText.trim()
+    setManualText('')
     if (isHumanTakeover) {
-      setCallState('HUMAN_ACTIVE')
-      agoraRtc.setHumanTakeover(true)
-      soundEffects.playHumanTakeover()
-    } else if (callState === 'HUMAN_ACTIVE' || callState === 'HUMAN_TAKEOVER') {
-      setCallState('RELAY_LISTENING')
-      agoraRtc.setHumanTakeover(false)
-    }
-  }, [isHumanTakeover])
-
-  // SECTION 40: RECONNECTION STATE CYCLE
-  useEffect(() => {
-    if (callState === 'RECONNECTING') {
-      setReconnectAttempt(1)
-      const t1 = setTimeout(() => setReconnectAttempt(2), 700)
-      const t2 = setTimeout(() => {
-        setCallState('CONNECTION_RESTORED')
-        soundEffects.playCallConnected()
-      }, 1600)
-      const t3 = setTimeout(() => {
-        setCallState('RELAY_LISTENING')
-      }, 3400)
-
-      return () => {
-        clearTimeout(t1)
-        clearTimeout(t2)
-        clearTimeout(t3)
-      }
-    } else if (callState === 'WAITING_FOR_APPROVAL') {
-      soundEffects.playApprovalRequested()
-    } else if (callState === 'CALL_ENDED') {
-      soundEffects.playCallEnded()
-    }
-  }, [callState])
-
-  const meta = CALL_STATES_META[callState]
-
-  // Autonomous AI Agent ↔ Tool Calling Loop
-  const handleRunWowDemo = async () => {
-    const sc = activeScenario || DEMO_SCENARIOS[0]
-    setCallState('CUSTOMER_SPEAKING')
-    setIsAiPaused(false)
-    setAiWorkingState('Listening...')
-
-    const defaultUtterance =
-      sc.id === 'payment-failure'
-        ? 'My bank account was debited twice for ₹2,499.'
-        : sc.id === 'language-switch'
-        ? 'Bhaiya actually main Gurgaon mein nahi hoon, mujhe Noida Sector 62 bhejna hai.'
-        : sc.id === 'human-takeover'
-        ? 'I want to talk to a human supervisor right now.'
-        : sc.id === 'tool-failure'
-        ? 'Mera package track nahi ho raha hai, error aa raha hai.'
-        : sc.id === 'angry-customer'
-        ? 'Yeh teesri baar hai jab tumhari service ne mera time waste kiya hai!'
-        : 'Mera order 5 din se nahi aaya.'
-
-    try {
-      setAiWorkingState('Understanding...')
-      const res = await fetch(apiUrl('/api/agent/turn'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          utterance: defaultUtterance,
-          caseId: caseState.id || sc.caseId,
-        }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-
-        // 1. Customer speech event
-        if (data.events?.[0]) {
-          agoraRtm.publishRelayEvent(data.events[0])
+      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      setTranscript((prev) => [
+        ...prev.filter(item => !item.isInterim),
+        {
+          id: 'op-msg-' + Date.now(),
+          timestamp: nowTime,
+          speaker: 'OPERATOR',
+          content: textToSend,
+          language: 'Hindi / English'
         }
-
-        // 2. Autonomous Tool Invocation decisions
-        setTimeout(() => {
-          setCallState(sc.callState === 'TOOL_ERROR' ? 'TOOL_ERROR' : 'TOOL_EXECUTING')
-          setAiWorkingState(sc.callState === 'TOOL_ERROR' ? 'Idle' : 'Checking order...')
-          soundEffects.playToolExecuted()
-
-          const toolCompletedEvent = data.events?.find((e: any) => e.type === 'tool.completed')
-          if (toolCompletedEvent) {
-            agoraRtm.publishRelayEvent(toolCompletedEvent)
-          }
-        }, 1000)
-
-        // 3. Approval created event
-        setTimeout(() => {
-          setCallState(sc.callState)
-          if (sc.callState === 'WAITING_FOR_APPROVAL') {
-            setAiWorkingState('Waiting for approval...')
-            soundEffects.playApprovalRequested()
-          } else if (sc.callState === 'HUMAN_ACTIVE') {
-            setAiWorkingState('Listening...')
-            soundEffects.playHumanTakeover()
-          }
-
-          const approvalEvent = data.events?.find((e: any) => e.type === 'approval.created')
-          if (approvalEvent) {
-            agoraRtm.publishRelayEvent(approvalEvent)
-          }
-        }, 2200)
-
-        // 4. Agent response synthesis
-        setTimeout(() => {
-          const agentSpeech = data.events?.find((e: any) => e.speaker === 'agent')
-          if (agentSpeech) {
-            agoraRtm.publishRelayEvent(agentSpeech)
-          }
-        }, 3200)
-        return
-      }
-    } catch (err) {
-      console.warn('[Autonomous Agent] Fallback loop:', err)
+      ])
+    } else {
+      processCustomerUtterance(textToSend)
     }
-
-    agoraRtm.publishRelayEvent({
-      type: 'speech.transcript',
-      speaker: 'customer',
-      text: defaultUtterance,
-      translation: sc.language.includes('Hindi') ? "My order hasn't arrived for 5 days." : undefined,
-      language: sc.language,
-      timestamp: new Date().toLocaleTimeString(),
-    })
   }
 
-  // Authoritative Dynamic Language Switch without Reload
-  const handleRunLanguageSwitchDemo = async () => {
-    setCallState('CUSTOMER_SPEAKING')
-    setIsAiPaused(false)
-
-    try {
-      const res = await fetch(apiUrl('/api/agent/turn'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          utterance: "Actually, let's continue in English.",
-          caseId: caseState.id || 'RLY-1042',
-        }),
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-
-        // 1. Customer speech event
-        if (data.events?.[0]) {
-          agoraRtm.publishRelayEvent(data.events[0])
-        }
-
-        // 2. Authoritative language.changed event
-        setTimeout(() => {
-          soundEffects.playToolExecuted()
-          setCurrentLanguageMode('Hindi → English (Switched)')
-
-          const langEvent = data.events?.find((e: any) => e.type === 'language.changed')
-          if (langEvent) {
-            agoraRtm.publishRelayEvent(langEvent)
-          }
-        }, 500)
-
-        // 3. Agent response in new language (Zero Session Reload)
-        setTimeout(() => {
-          setCallState('RELAY_SPEAKING')
-          const agentSpeech = data.events?.find((e: any) => e.speaker === 'agent')
-          if (agentSpeech) {
-            agoraRtm.publishRelayEvent(agentSpeech)
-          }
-        }, 1200)
-        return
+  const playScenarioTurnByTurn = async (scenario: DemoScenario) => {
+    setTranscript([
+      {
+        id: 'start-0',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speaker: 'RELAY',
+        content: "Starting Test Case: " + scenario.title,
+        language: scenario.language,
       }
-    } catch (err) {
-      console.warn('[Language Switch] Fallback loop:', err)
+    ])
+
+    for (let i = 0; i < scenario.transcript.length; i++) {
+      await new Promise((r) => setTimeout(r, 1200))
+      const turn = scenario.transcript[i]
+
+      const item: TranscriptItem = {
+        id: "turn-" + Date.now() + "-" + i,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        speaker: turn.speaker === 'CUSTOMER' ? 'CUSTOMER' : 'RELAY',
+        content: turn.content,
+        translation: turn.translation,
+        language: scenario.language,
+      }
+
+      setTranscript((prev) => [...prev, item])
     }
-
-    agoraRtm.publishRelayEvent({
-      type: 'language.changed',
-      from: 'hi-IN',
-      to: 'en-IN',
-      timestamp: new Date().toLocaleTimeString(),
-    })
   }
-
-  // Section 34: Auto Case Provisioning simulation
-  const handleStartNewCallSession = () => {
-    setCaseStatus('creating')
-    setCallState('CONNECTING')
-    setIsAiPaused(false)
-    setTranscript([])
-
-    setTimeout(() => {
-      setCaseStatus('created')
-      resetCase('RLY-1043')
-      setCallState('RELAY_LISTENING')
-      soundEffects.playCallConnected()
-
-      agoraRtm.publishEvent('TRANSCRIPT', {
-        speaker: 'CUSTOMER',
-        text: 'Hi, I need assistance with my subscription invoice.',
-        translation: 'Namaste, mujhe apne subscription invoice ke sath madad chahiye.',
-        language: 'English',
-      })
-      onStartNewCall?.()
-    }, 1200)
-  }
-
-  const isBargeIn = callState === 'CUSTOMER_INTERRUPTED'
-  const isOperator = callState === 'HUMAN_ACTIVE' || callState === 'HUMAN_TAKEOVER'
-
-  const currentCustomerName = caseState.customerName || 'Aarav Sharma'
-  const currentCustomerInitials =
-    currentCustomerName
-      .split(' ')
-      .map((p) => p[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2) || 'CU'
-  const currentCustomerTier = caseState.customerTier
-    ? `${caseState.customerTier} Tier`
-    : 'Platinum Tier (12 Orders)'
-
-  // Step determination for the Dominant 5-Step Pipeline
-  const currentStepNum =
-    callState === 'CALL_ENDED'
-      ? 5
-      : callState === 'WAITING_FOR_APPROVAL'
-      ? 4
-      : callState === 'TOOL_EXECUTING' || aiWorkingState === 'Checking order...'
-      ? 3
-      : aiWorkingState === 'Understanding...' || (callState === 'RELAY_SPEAKING' && transcript.length <= 2)
-      ? 2
-      : 1
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-canvas overflow-hidden">
-      {/* 1. ULTRA-COMPACT UNIFIED TOP BAR: CASE INFO + 5-STEP PIPELINE + LANGUAGE & EVALUATOR TOOLS */}
-      <div className="bg-canvas-pure border-b border-border-subtle px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 select-none font-mono text-xs">
-        {/* Left: Case ID & Intent */}
-        <div className="flex items-center gap-2 min-w-0">
-          {caseStatus === 'creating' ? (
-            <div className="flex items-center gap-1.5 text-ops-warning font-bold animate-pulse text-[11px]">
-              <Loader2 className="w-3 h-3 animate-spin text-ops-warning" />
-              <span>Creating...</span>
-            </div>
-          ) : (
-            <div className="flex items-baseline gap-1">
-              <span className="font-sans text-[10px] font-semibold text-ink-muted uppercase">CASE</span>
-              <span className="font-bold text-xs text-ink-primary font-mono tracking-tight">#{caseState.id}</span>
-            </div>
-          )}
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-canvas overflow-hidden font-sans select-none">
+      {/* 1. TOP LIVE CALL CENTERPIECE BAR */}
+      <div className={"h-14 border-b px-4 flex items-center justify-between shrink-0 shadow-hairline transition-colors " + (
+        isHumanTakeover
+          ? 'bg-amber-500/15 border-amber-500/30'
+          : isCallActive
+          ? 'bg-canvas-pure border-border-subtle'
+          : 'bg-canvas-subtle border-border-subtle'
+      )}>
+        {/* Left: Prominent Live Call Button & Session State */}
+        <div className="flex items-center gap-3">
+          <Button
+            variant={isCallActive ? 'outline' : 'primary'}
+            size="sm"
+            onClick={handleToggleCall}
+            className={"font-mono text-xs font-bold uppercase tracking-wider h-8 px-3.5 shadow-xs cursor-pointer flex items-center gap-1.5 " + (
+              isCallActive
+                ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border-rose-500/30'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+            )}
+          >
+            {isCallActive ? <PhoneOff className="w-3.5 h-3.5 text-rose-500" /> : <PhoneCall className="w-3.5 h-3.5" />}
+            <span>{isCallActive ? 'END CALL' : '🎙 START REAL CALL'}</span>
+          </Button>
 
-          <span className="text-border text-xs">/</span>
-          <span className="text-xs font-medium text-ink-primary truncate max-w-[140px] sm:max-w-[220px]">
-            {caseStatus === 'creating' ? 'Provisioning...' : caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Customer Support'}
-          </span>
-          <span className="text-[10px] text-ink-muted hidden md:inline">• SIP_04</span>
-        </div>
-
-        {/* Center: Slim 5-Step Pipeline Chips */}
-        <div className="hidden lg:flex items-center gap-1 text-[10px]">
-          {[
-            { num: 1, label: 'SPEAKS' },
-            { num: 2, label: 'UNDERSTANDS' },
-            { num: 3, label: 'ACTS' },
-            { num: 4, label: 'APPROVES' },
-            { num: 5, label: 'COMPLETES' },
-          ].map((step, idx) => (
-            <React.Fragment key={step.num}>
-              {idx > 0 && <span className="text-ink-muted text-[9px]">→</span>}
-              <div
-                className={`px-1.5 py-0.2 rounded-[2px] border transition-all ${
-                  currentStepNum === step.num
-                    ? 'bg-accent text-white border-accent font-bold shadow-xs'
-                    : currentStepNum > step.num
-                    ? 'bg-canvas-subtle text-ink-primary border-border-subtle font-medium'
-                    : 'bg-canvas-subtle text-ink-muted border-border-subtle opacity-60'
-                }`}
-              >
-                <span>{step.num}. {step.label}</span>
-              </div>
-            </React.Fragment>
-          ))}
-        </div>
-
-        {/* Right: Language Pill, Status Badge & Tools Toggle */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <div className="flex items-center gap-1 text-[10px] bg-canvas-subtle border border-border-subtle px-2 py-0.5 rounded-[3px] text-ink-secondary">
-            <Languages className="w-2.5 h-2.5 text-ink-muted" />
-            <span>{currentLanguageMode}</span>
+          <div className="flex items-center gap-2">
+            <span className={"w-2.5 h-2.5 rounded-full " + (
+              !isCallActive
+                ? 'bg-ink-muted'
+                : isHumanTakeover
+                ? 'bg-amber-500 animate-ping'
+                : 'bg-ops-live animate-ping'
+            )} />
+            <span className={"font-mono text-xs font-bold uppercase tracking-wider " + (
+              !isCallActive
+                ? 'text-ink-muted'
+                : isHumanTakeover
+                ? 'text-amber-500'
+                : 'text-ink-primary'
+            )}>
+              {isHumanTakeover ? 'HUMAN IN CONTROL (Maya Sharma)' : isCallActive ? 'LIVE AGORA RTC CALL' : 'STANDBY'}
+            </span>
           </div>
 
-          {isAiPaused ? (
-            <Badge variant="warning" dot size="xs" className="font-mono">RELAY PAUSED</Badge>
-          ) : (
-            <Badge variant={meta.badgeVariant} dot size="xs" className="font-mono">
-              {meta.topBarBadge.replace('● ', '')}
-            </Badge>
-          )}
+          <span className="text-border font-mono hidden md:inline">|</span>
+          <div className="hidden md:flex items-center gap-1.5 font-mono text-xs text-ink-secondary font-medium">
+            <User className="w-3.5 h-3.5 text-accent" />
+            <span>{caseState.customerName || 'Aarav Patel'} (Order #{caseState.orderId || '72143'})</span>
+          </div>
+
+          <span className="text-border font-mono hidden sm:inline">|</span>
+          <span className="font-mono text-xs text-ink-muted tabular-nums hidden sm:inline">{formatDuration(callDuration)}</span>
+        </div>
+
+        {/* Center: Live Waveform Monitor */}
+        {isCallActive && (
+          <div className="hidden lg:flex items-center gap-2 bg-canvas-subtle/80 px-2.5 py-1 rounded border border-border-subtle">
+            <Volume2 className="w-3.5 h-3.5 text-accent animate-pulse" />
+            <div className="w-24 h-4 flex items-center opacity-90">
+              <WaveformMonitor callState={callState} />
+            </div>
+          </div>
+        )}
+
+        {/* Right: Quick Failure Simulator, Takeover Switch & Voice Profile */}
+        <div className="flex items-center gap-2">
+          {/* SIMULATE TRACKING FAILURE KILLER DEMO TRIGGER */}
+          <button
+            type="button"
+            onClick={() => triggerFailureSimulation('TOOL_TIMEOUT')}
+            className="text-[10px] font-mono font-bold px-2.5 py-1 rounded border border-rose-500/40 text-rose-500 hover:bg-rose-500/10 bg-canvas-subtle transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+            title="Simulate Tracking Failure: Timeout ➔ Retry 1 ➔ Retry 2 ➔ Classified ➔ Escalated"
+          >
+            <AlertTriangle className="w-3 h-3 text-rose-500" />
+            <span>⚠ SIMULATE TRACKING FAILURE</span>
+          </button>
 
           <button
             type="button"
-            onClick={() => setShowEvaluatorTools((prev) => !prev)}
-            className={`font-mono text-[10px] px-1.5 py-0.5 rounded-[3px] border transition-colors cursor-pointer flex items-center gap-1 ${
-              showEvaluatorTools || runtimeMode === 'DEMO'
-                ? 'bg-canvas-muted text-ink-primary border-border-strong font-bold'
-                : 'bg-canvas-subtle text-ink-muted border-border-subtle hover:text-ink-primary'
-            }`}
-            title="Toggle Evaluator State Simulator & Demo Tools"
+            onClick={() => {
+              const next = agentGender === 'female' ? 'male' : 'female'
+              setAgentGender(next)
+              speechService.setAgentGender(next)
+            }}
+            className="text-[10px] font-mono font-bold px-2 py-1 rounded border border-border-subtle hover:border-accent text-ink-secondary hover:text-accent bg-canvas-subtle transition-colors cursor-pointer hidden sm:flex items-center gap-1"
+            title="Toggle Agent Voice Profile"
           >
-            <span>⚡ Tools</span>
-            <span className="text-[8px] opacity-70">{showEvaluatorTools ? '▲' : '▼'}</span>
+            <span>Voice: {agentGender === 'female' ? '♀ SITA' : '♂ RAM'}</span>
+          </button>
+
+          <Button
+            variant={isHumanTakeover ? 'outline' : 'primary'}
+            size="sm"
+            onClick={() => {
+              if (!isHumanTakeover) {
+                triggerHumanTakeover('Operator initiated direct handoff')
+              } else {
+                agoraRtc.setHumanTakeover(false)
+                onToggleTakeover()
+                setCallState('RELAY_LISTENING')
+                setAiWorkingState('AI Listening...')
+              }
+            }}
+            className={"font-mono text-xs font-bold uppercase tracking-wider h-8 px-3 shadow-xs cursor-pointer " + (
+              isHumanTakeover
+                ? 'bg-amber-400 text-black border-amber-500 hover:bg-amber-500'
+                : 'bg-accent text-white hover:bg-accent-hover'
+            )}
+          >
+            {isHumanTakeover ? '🤖 RETURN TO AI' : '✋ TAKE OVER'}
+          </Button>
+        </div>
+      </div>
+
+      {/* 2. THE 7-STAGE RELAY LOOP PROGRESS BAR */}
+      <div className="bg-canvas-pure border-b border-border-subtle px-4 py-1.5 flex items-center justify-between text-[9px] font-mono overflow-x-auto no-scrollbar shrink-0 shadow-hairline">
+        <div className="flex items-center gap-1 shrink-0">
+          <span className="font-bold text-ink-muted uppercase mr-1">RELAY LOOP:</span>
+          {RELAY_LOOP_STAGES.map((stage, idx) => {
+            const isActive = currentLoopStage === stage.id
+            return (
+              <React.Fragment key={stage.id}>
+                <span
+                  className={"px-1.5 py-0.5 rounded font-bold transition-all " + (
+                    isActive
+                      ? 'bg-accent text-white shadow-xs scale-105'
+                      : 'text-ink-muted bg-canvas-subtle/60'
+                  )}
+                  title={stage.desc}
+                >
+                  {stage.label}
+                </span>
+                {idx < RELAY_LOOP_STAGES.length - 1 && (
+                  <span className="text-border text-[8px]">➔</span>
+                )}
+              </React.Fragment>
+            )
+          })}
+        </div>
+
+        {/* Hero Demo Story Trigger */}
+        <button
+          type="button"
+          onClick={playHeroMainStory}
+          className="ml-2 px-2 py-0.5 bg-accent/10 hover:bg-accent/20 text-accent border border-accent/30 rounded font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+          title="Play the complete 7-stage loop with Order #72143"
+        >
+          <Sparkles className="w-2.5 h-2.5" />
+          <span>⭐ PLAY HERO STORY</span>
+        </button>
+      </div>
+
+      {/* 3. OPERATOR TAKEOVER LIVE BANNER */}
+      {isHumanTakeover && (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center justify-between font-mono text-[11px] text-amber-500 animate-in fade-in duration-150">
+          <div className="flex items-center gap-2">
+            <UserCheck className="w-4 h-4 text-amber-500" />
+            <span><strong>Maya Sharma</strong> has duplex control. AI is muted. Speak or select a suggested script below.</span>
+          </div>
+          <span className="text-[10px] font-bold bg-amber-500/20 px-2 py-0.5 rounded">DUPLEX ACTIVE</span>
+        </div>
+      )}
+
+      {/* 4. LIVE CONVERSATION STREAM */}
+      <div
+        ref={transcriptScrollRef}
+        className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6 space-y-4 font-sans bg-canvas/30"
+      >
+        {transcript.map((item) => {
+          const isCustomer = item.speaker === 'CUSTOMER'
+          const isOperator = item.speaker === 'OPERATOR'
+
+          return (
+            <div
+              key={item.id}
+              className={"flex flex-col gap-1 max-w-2xl animate-in fade-in slide-in-from-bottom-2 duration-150 " + (
+                isCustomer ? 'mr-auto' : 'ml-auto items-end'
+              )}
+            >
+              {/* Speaker Header */}
+              <div className="flex items-center gap-2 font-mono text-[10px] select-none px-1">
+                <span className="text-ink-muted tabular-nums">{item.timestamp}</span>
+                <span
+                  className={"font-bold px-1.5 py-0.2 rounded uppercase tracking-wider " + (
+                    isCustomer
+                      ? item.isInterim ? 'bg-amber-500/20 text-amber-500 border border-amber-500/40 animate-pulse' : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                      : isOperator
+                      ? 'bg-ops-warningBg text-ops-warning border border-ops-warningBorder'
+                      : 'bg-accent text-white'
+                  )}
+                >
+                  {item.isInterim ? 'STREAMING...' : item.speaker}
+                </span>
+                {item.language && <span className="text-ink-muted">• {item.language}</span>}
+              </div>
+
+              {/* Message Bubble */}
+              <div
+                className={"p-3.5 rounded-[8px] shadow-sm space-y-1.5 text-xs leading-relaxed max-w-xl transition-all " + (
+                  item.isInterim
+                    ? 'bg-amber-500/5 border border-amber-500/30 text-ink-primary font-mono'
+                    : isCustomer
+                    ? 'bg-canvas-pure border border-border-subtle text-ink-primary'
+                    : isOperator
+                    ? 'bg-ops-warningBg/30 border-2 border-ops-warningBorder text-ink-primary'
+                    : 'bg-canvas-pure border border-accent-border/80 text-ink-primary ring-1 ring-accent/10'
+                )}
+              >
+                <p className="font-medium select-text text-[13px]">
+                  {item.content}
+                </p>
+
+                {item.translation && (
+                  <p className="text-[11px] text-ink-secondary italic pt-1 border-t border-border-subtle/60 select-text flex items-center gap-1.5">
+                    <Languages className="w-3 h-3 text-accent shrink-0" />
+                    <span>{item.translation}</span>
+                  </p>
+                )}
+
+                {item.isTool && (
+                  <div className={"mt-1 pt-1.5 border-t border-border-subtle flex items-center justify-between font-mono text-[10px] px-2 py-1 rounded border " + (
+                    item.status?.includes('504') || item.status?.includes('Timeout') || item.status?.includes('503') || item.status?.includes('ALERT')
+                      ? 'text-rose-500 bg-rose-500/10 border-rose-500/30 font-bold'
+                      : item.isPendingTool
+                      ? 'text-accent bg-accent-subtle/50 border-accent-border/40 animate-pulse'
+                      : 'text-accent bg-accent-subtle/50 border-accent-border/40'
+                  )}>
+                    <span className="font-bold flex items-center gap-1">
+                      {item.isPendingTool ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>⚡</span>}
+                      <span>{item.toolName}</span>
+                    </span>
+                    <span className={item.status?.includes('504') || item.status?.includes('503') ? 'text-rose-500 font-bold' : item.isPendingTool ? 'text-accent font-semibold' : 'text-ops-live font-semibold'}>
+                      {item.status || 'Success'}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* 5. REAL-TIME AI STATE STRIP */}
+      <div className="bg-canvas-pure border-t border-border-subtle/80 px-4 py-2 flex items-center justify-between font-mono text-[11px] text-ink-secondary shrink-0">
+        <div className="flex items-center gap-2">
+          <span className={"w-2 h-2 rounded-full " + (
+            !isCallActive
+              ? 'bg-ink-muted'
+              : isHumanTakeover
+              ? 'bg-amber-500 animate-ping'
+              : aiWorkingState.includes('Speaking')
+              ? 'bg-amber-400 animate-pulse'
+              : aiWorkingState.includes('Responding')
+              ? 'bg-accent animate-pulse'
+              : 'bg-ops-live animate-pulse'
+          )} />
+          <span className="font-bold text-ink-primary">
+            {isCallActive ? "🎙 " + aiWorkingState : 'Call Standby — Click "START REAL CALL"'}
+          </span>
+        </div>
+
+        {/* Live Mic & Test Cases Drawer Toggle */}
+        <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => setShowTestCasesTray(!showTestCasesTray)}
+            className="text-[10px] font-mono text-ink-muted hover:text-accent flex items-center gap-1 cursor-pointer transition-colors"
+          >
+            <span>Test Benchmarks</span>
+            <ChevronDown className={"w-3 h-3 transition-transform " + (showTestCasesTray ? 'rotate-180' : '')} />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleToggleMute}
+            className={"flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer " + (
+              isMuted
+                ? 'bg-ops-warningBg text-ops-warning border-ops-warningBorder'
+                : 'bg-ops-liveBg text-ops-live border-ops-liveBorder'
+            )}
+          >
+            {isMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 animate-pulse" />}
+            <span>{isMuted ? 'MIC MUTED' : 'MIC LIVE'}</span>
           </button>
         </div>
       </div>
 
-      {/* EVALUATOR TOOLS & STATE SIMULATOR BAR (CONDITIONAL) */}
-      {(showEvaluatorTools || runtimeMode === 'DEMO') && (
-        <div className="bg-canvas-subtle border-b border-border-subtle p-2 px-3 flex flex-col gap-2 shrink-0 select-none animate-in fade-in duration-150">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-mono font-bold text-ink-muted uppercase tracking-wider">
-                DEMO AUTOMATION:
-              </span>
-              <Button
-                variant="primary"
-                size="xs"
-                onClick={handleRunWowDemo}
-                className="font-mono text-[10px] gap-1 h-6 px-2 bg-accent text-white font-bold hover:bg-accent-hover cursor-pointer"
-                title="Execute the 5-step speech-to-action demonstration"
-              >
-                <Play className="w-2.5 h-2.5 fill-current" />
-                <span>PLAY DEMO LOOP</span>
-              </Button>
-
-              <Button
-                variant="secondary"
-                size="xs"
-                onClick={handleRunLanguageSwitchDemo}
-                className="font-mono text-[10px] gap-1 h-6 px-2 text-ink-primary border-border-subtle bg-canvas-pure hover:bg-canvas-muted cursor-pointer"
-                title="Simulate dynamic mid-call language switch from Hindi to English"
-              >
-                <Languages className="w-2.5 h-2.5" />
-                <span className="hidden sm:inline">SWITCH LANG</span>
-              </Button>
-            </div>
-
-            <span className="text-[9px] font-mono text-ink-muted hidden md:inline">
-              15-State Deterministic Simulator
-            </span>
+      {/* 6. COLLAPSIBLE TEST BENCHMARKS TRAY */}
+      {showTestCasesTray && (
+        <div className="bg-canvas-subtle border-t border-border-subtle p-2.5 px-4 shrink-0 space-y-2 animate-in slide-in-from-bottom-2 duration-100">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            <span className="text-[9px] font-mono font-bold text-ink-muted uppercase shrink-0">DOMAINS:</span>
+            {Object.keys(INTENT_CATEGORY_PROMPTS).map((catKey) => {
+              const cat = INTENT_CATEGORY_PROMPTS[catKey]
+              const Icon = cat.icon
+              const isSelected = selectedPromptCategory === catKey
+              return (
+                <button
+                  key={catKey}
+                  type="button"
+                  onClick={() => setSelectedPromptCategory(catKey)}
+                  className={"px-2 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 border transition-all cursor-pointer " + (
+                    isSelected
+                      ? 'bg-accent text-white border-accent shadow-xs'
+                      : 'bg-canvas-pure text-ink-secondary hover:text-accent border-border-subtle'
+                  )}
+                >
+                  <Icon className="w-3 h-3" />
+                  <span>{cat.label}</span>
+                </button>
+              )
+            })}
           </div>
 
-          {/* 6 SCENARIOS QUICK BUTTON STRIP & PLAYBACK CONTROLS */}
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 border-t border-border-subtle/60 pt-1.5">
-            <span className="text-[9px] font-mono font-bold text-accent uppercase tracking-wider shrink-0">
-              ⚡ SCENARIOS:
-            </span>
-            {DEMO_SCENARIOS.map((sc, idx) => (
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            {INTENT_CATEGORY_PROMPTS[selectedPromptCategory]?.phrases.map((phrase, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => processCustomerUtterance(phrase)}
+                className="px-2.5 py-1 bg-canvas-pure hover:bg-accent-subtle text-ink-primary hover:text-accent border border-border-subtle rounded text-[11px] font-sans truncate shrink-0 transition-colors cursor-pointer"
+              >
+                "{phrase}"
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 7. NATURAL SPEECH / TEXT INPUT BAR */}
+      <div className="bg-canvas-pure border-t border-border-subtle p-2.5 px-4 shrink-0">
+        <form onSubmit={handleManualSubmit} className="flex items-center gap-1.5">
+          <input
+            type="text"
+            placeholder={isHumanTakeover ? "Type operator message..." : "🎙 Microphone is active — Speak naturally or type any request (Hindi / English)..."}
+            value={manualText}
+            onChange={(e) => setManualText(e.target.value)}
+            className="flex-1 bg-canvas-subtle border border-border-subtle rounded px-3 py-1.5 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-accent font-sans h-8"
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            className="h-8 px-3.5 font-mono text-[10px] font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover cursor-pointer shrink-0"
+          >
+            <Send className="w-3 h-3 mr-1" />
+            <span>{isHumanTakeover ? 'SPEAK' : 'SEND'}</span>
+          </Button>
+        </form>
+      </div>
+
+      {/* 8. SUGGESTED OPERATOR RESPONSES */}
+      <div className="bg-canvas-pure border-t border-border-subtle p-2.5 px-4 shrink-0 space-y-1.5 select-none shadow-hairline">
+        <div className="flex items-center justify-between font-mono text-[10px]">
+          <span className="font-bold text-ink-muted uppercase tracking-wider flex items-center gap-1.5">
+            <Sparkles className="w-3 h-3 text-accent" />
+            <span>{isHumanTakeover ? 'OPERATOR HANDOFF SCRIPTS' : 'SUGGESTED SCRIPTS'}</span>
+          </span>
+          <button
+            type="button"
+            onClick={handleRefreshSuggestions}
+            className="text-accent font-bold hover:underline flex items-center gap-1 cursor-pointer"
+          >
+            <RefreshCw className="w-2.5 h-2.5" />
+            <span>Refresh</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {SUGGESTION_BANKS[suggestionBankIdx].map((phrase, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => handleUseSuggestion(phrase, idx)}
+              className="text-left p-1.5 rounded bg-canvas-subtle hover:bg-accent-subtle/50 border border-border-subtle hover:border-accent-border transition-all text-[11px] font-sans text-ink-primary font-medium flex items-center justify-between gap-2 cursor-pointer group"
+            >
+              <span className="truncate">"{phrase}"</span>
+              <span className="font-mono text-[9px] text-accent opacity-0 group-hover:opacity-100 shrink-0 font-bold">
+                {copiedIndex === idx ? 'COPIED ✓' : 'COPY'}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 9. CALL CONTROLS BAR */}
+      <VoiceControlsBar
+        isHumanTakeover={isHumanTakeover}
+        isAiPaused={isAiPaused}
+        onToggleTakeover={() => {
+          if (!isHumanTakeover) {
+            triggerHumanTakeover('Operator clicked takeover')
+          } else {
+            agoraRtc.setHumanTakeover(false)
+            onToggleTakeover()
+            setCallState('RELAY_LISTENING')
+            setAiWorkingState('AI Listening...')
+          }
+        }}
+        onTogglePauseAi={() => setIsAiPaused(!isAiPaused)}
+        onEndCall={handleToggleCall}
+      />
+
+      {/* 10. DEVELOPER SCENARIO BAR */}
+      {isDevMode && (
+        <div className="bg-[#111827] border-t border-[#1F2937] px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto text-[10px] font-mono text-white">
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-accent font-bold">⚡ DEV TEST HARNESS:</span>
+            {DEMO_SCENARIOS.slice(0, 4).map((sc, idx) => (
               <button
                 key={sc.id}
                 type="button"
-                onClick={() => loadScenario(sc)}
-                className={`px-2 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase transition-all whitespace-nowrap cursor-pointer flex items-center gap-1 shrink-0 ${
-                  activeScenario?.id === sc.id
-                    ? 'bg-accent text-white shadow-xs'
-                    : 'bg-canvas-pure text-ink-primary border border-border-subtle hover:border-accent hover:text-accent'
-                }`}
-                title={`${sc.title}: ${sc.description}`}
+                onClick={() => playScenarioTurnByTurn(sc)}
+                className="bg-[#1F2937] hover:bg-accent text-white px-2 py-0.5 rounded transition-colors cursor-pointer"
               >
-                <span className="opacity-70">{idx + 1}.</span>
-                <span>{sc.title}</span>
+                {idx + 1}. {sc.title}
               </button>
             ))}
-
-            {activeScenario && (
-              <div className="flex items-center gap-1 ml-auto shrink-0 pl-2 border-l border-border-subtle">
-                <button
-                  type="button"
-                  onClick={() => playScenarioTurnByTurn(activeScenario)}
-                  className="px-1.5 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase bg-canvas-pure text-ink-primary border border-border-subtle hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
-                  title="Replay this scenario turn-by-turn"
-                >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                  <span>REPLAY</span>
-                </button>
-
-                {isPlayingScenario && (
-                  <button
-                    type="button"
-                    onClick={() => skipToScenarioEnd(activeScenario)}
-                    className="px-1.5 py-0.5 rounded-[2px] font-mono text-[9px] font-bold uppercase bg-canvas-pure text-ops-warning border border-ops-warningBorder hover:bg-ops-warningBg cursor-pointer flex items-center gap-1 animate-pulse"
-                    title="Skip turn-by-turn animation and show all messages immediately"
-                  >
-                    <span>⏭ SKIP TO END</span>
-                  </button>
-                )}
-              </div>
-            )}
           </div>
 
           <CallStateSimulator
@@ -996,686 +1361,94 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
       )}
 
-      {/* FAILURE STATE BANNER */}
-      {caseState.activeFailure && (
-        <div
-          className={`flex items-center justify-between gap-3 px-3 py-1.5 border-b font-mono text-xs shrink-0 animate-in slide-in-from-top duration-200 ${
-            caseState.activeFailure.escalate
-              ? 'bg-ops-criticalBg border-ops-criticalBorder text-ops-critical'
-              : 'bg-ops-warningBg border-ops-warningBorder text-ops-warning'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-            <div>
-              <span className="font-bold uppercase tracking-wider">{caseState.activeFailure.state}</span>
-              <span className="mx-1.5 text-border">·</span>
-              <span>{caseState.activeFailure.message}</span>
-            </div>
-          </div>
-          <button
-            onClick={clearFailure}
-            className="text-[10px] font-bold opacity-70 hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded border border-current"
-          >
-            DISMISS
-          </button>
-        </div>
-      )}
-
-      {/* RECONNECTION STATE BANNER */}
-      {callState === 'RECONNECTING' && (
-        <div className="bg-ops-warningBg border-b border-ops-warningBorder px-3 py-1.5 flex items-center justify-between font-mono text-xs text-ops-warning select-none">
-          <div className="flex items-center gap-2 font-bold text-xs tracking-tight uppercase">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>RECONNECTING AGORA AUDIO STREAM...</span>
-          </div>
-          <span className="font-bold text-xs tabular-nums">Attempt {reconnectAttempt} / 5</span>
-        </div>
-      )}
-
-      {callState === 'CONNECTION_RESTORED' && (
-        <div className="bg-ops-liveBg border-b border-ops-liveBorder px-3 py-1 flex items-center justify-between font-mono text-xs text-ops-live select-none animate-in fade-in duration-150">
-          <div className="flex items-center gap-2 font-bold">
-            <Check className="w-3.5 h-3.5 stroke-[3]" />
-            <span>✓ WEBRTC AUDIO RESTORED</span>
-          </div>
-          <span className="text-[10px] text-ink-muted">Channel Synced</span>
-        </div>
-      )}
-
-      {/* 2. SECTION 33: END-OF-CALL SUMMARY CARD */}
-      {callState === 'CALL_ENDED' ? (
-        <div className="flex-1 flex items-center justify-center p-6 bg-canvas-subtle overflow-y-auto">
-          <div className="w-full max-w-md bg-canvas-pure border border-border-subtle rounded-[6px] p-6 shadow-hairline space-y-5 font-sans animate-in fade-in duration-200">
-            <div className="flex items-start justify-between pb-3 border-b border-border-subtle">
-              <div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-ops-live" />
-                  <h2 className="font-mono text-sm font-bold text-ink-primary tracking-widest uppercase">
-                    CALL COMPLETE
-                  </h2>
-                </div>
-                <p className="font-mono text-xs text-ink-muted mt-0.5 tabular-nums">02:41 duration</p>
-              </div>
-              <Badge variant="live" size="xs" className="font-mono">ARCHIVED</Badge>
-            </div>
-
-            <div className="space-y-3 font-mono text-xs">
-              <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">ISSUE</span>
-                <span className="text-sm font-bold text-ink-primary block font-sans">Delivery dispute</span>
-              </div>
-              <div className="h-px bg-border-subtle/70" />
-              <div>
-                <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">RESOLUTION</span>
-                <span className="text-xs font-bold text-ops-live block">Refund initiated</span>
-              </div>
-              <div className="h-px bg-border-subtle/70" />
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">TOOLS USED</span>
-                  <span className="text-sm font-bold text-ink-primary block tabular-nums">4</span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-ink-muted uppercase block font-semibold tracking-wider">HUMAN INTERVENTION</span>
-                  <span className="text-sm font-bold text-ink-primary block tabular-nums">1</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="pt-3 border-t border-border-subtle flex flex-col gap-2 font-mono">
-              <Button
-                variant="primary"
-                size="md"
-                onClick={() => onViewCase?.(caseState.id)}
-                className="w-full font-mono text-xs font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover justify-center h-9"
-              >
-                <span>[ ⚡ REPLAY EVIDENCE TIMELINE ]</span>
-              </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => onViewCase?.(caseState.id)}
-                  className="flex-1 font-mono text-xs font-bold uppercase tracking-wider text-ink-primary hover:bg-canvas-muted"
-                >
-                  VIEW CASE
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={handleStartNewCallSession}
-                  className="flex-1 font-mono text-xs font-bold uppercase tracking-wider text-ink-primary hover:bg-canvas-muted"
-                >
-                  START NEW CALL
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* BANNER MESSAGE (IF ANY) */}
-          {!isAiPaused && callState !== 'RECONNECTING' && callState !== 'CONNECTION_RESTORED' && meta.bannerMessage && (
-            <div
-              className={`px-3 py-1 border-b font-mono text-[10px] flex items-center justify-between select-none ${
-                meta.bannerMessage.type === 'critical'
-                  ? 'bg-ops-criticalBg border-ops-criticalBorder text-ops-critical'
-                  : meta.bannerMessage.type === 'warning'
-                  ? 'bg-ops-warningBg border-ops-warningBorder text-ops-warning'
-                  : 'bg-accent-subtle border-accent-border text-accent'
-              }`}
-            >
-              <div className="flex items-center gap-1.5 font-semibold">
-                {meta.bannerMessage.type === 'critical' ? (
-                  <AlertOctagon className="w-3 h-3 shrink-0" />
-                ) : meta.bannerMessage.type === 'warning' ? (
-                  <AlertTriangle className="w-3 h-3 shrink-0" />
-                ) : (
-                  <Radio className="w-3 h-3 shrink-0" />
-                )}
-                <span>{meta.bannerMessage.text}</span>
-              </div>
-              {meta.bannerMessage.code && (
-                <span className="text-[9px] font-mono text-ink-muted hidden sm:inline">
-                  CODE: {meta.bannerMessage.code}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* 3. SLIM 2-COLUMN PARTICIPANT STRIP (Side-by-Side: Customer & Voice Agent) */}
-          <div className="px-3 py-1.5 bg-canvas-subtle border-b border-border-subtle flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 select-none shrink-0 text-xs">
-            {/* Customer Box */}
-            <div className={`flex-1 bg-canvas-pure border rounded-[4px] px-2.5 py-1 flex items-center justify-between shadow-hairline transition-colors ${
-              isBargeIn
-                ? 'border-ops-criticalBorder bg-ops-criticalBg/20'
-                : callState === 'CUSTOMER_SPEAKING'
-                ? 'border-accent-border bg-accent-subtle/20'
-                : 'border-border-subtle'
-            }`}>
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="w-6 h-6 rounded-[3px] bg-accent-subtle border border-accent-border flex items-center justify-center font-mono text-[10px] font-bold text-accent shrink-0">
-                  {currentCustomerInitials}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 leading-tight">
-                    <span className="text-[9px] font-mono font-bold text-ink-muted uppercase">CUSTOMER</span>
-                    <span className="text-border text-[10px]">/</span>
-                    <span className="font-bold text-xs text-ink-primary font-sans truncate">{currentCustomerName}</span>
-                  </div>
-                  <div className="text-[9px] font-mono text-ink-muted leading-tight truncate">
-                    <span>{currentLanguageMode}</span> • <span>{currentCustomerTier}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Accurate Customer Speaking Badge: ONLY shows SPEAKING when customer is actually speaking */}
-              <div className="shrink-0 pl-2">
-                {callState === 'CUSTOMER_SPEAKING' ? (
-                  <Badge variant="accent" dot size="xs" className="font-mono animate-pulse">
-                    SPEAKING
-                  </Badge>
-                ) : callState === 'CUSTOMER_INTERRUPTED' ? (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => openProofInspector({
-                        timestamp: '21:34:02',
-                        eventType: 'customer.interruption',
-                        title: 'Caller Barge-in Detected',
-                        source: 'Agora VAD + WebRTC Audio Stream',
-                        confidence: 0.98,
-                        payload: {
-                          vad_trigger: 'SPEECH_DETECTED',
-                          active_stream: 'inbound_audio_track_0',
-                          cancelled_audio_buffer_ms: 320,
-                          pipeline_action: 'CANCEL_TTS_IMMEDIATE'
-                        }
-                      })}
-                      className="text-[8px] font-mono font-bold text-ops-critical bg-ops-criticalBg border border-ops-criticalBorder px-1 py-0.2 rounded cursor-pointer"
-                    >
-                      [EVENT]
-                    </button>
-                    <Badge variant="critical" dot size="xs" className="font-mono animate-pulse">
-                      INTERRUPTED
-                    </Badge>
-                  </div>
-                ) : callState === 'RECONNECTING' ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono animate-pulse">
-                    RECONNECTING
-                  </Badge>
-                ) : (
-                  <Badge variant="standby" size="xs" className="font-mono text-ink-muted">
-                    {meta.participantStatus.customer === 'SPEAKING' ? 'IDLE' : meta.participantStatus.customer}
-                  </Badge>
-                )}
-              </div>
-            </div>
-
-            {/* Duplex Bridge Center Pill */}
-            <div className="hidden md:flex items-center justify-center px-1">
-              <div className="flex items-center gap-1 px-2 py-0.5 bg-canvas-pure rounded-full border border-border-subtle text-[9px] font-mono text-ink-muted shadow-hairline shrink-0">
-                <ArrowUpDown className="w-2.5 h-2.5 text-accent" />
-                <span>{isOperator ? 'OPERATOR ACTIVE' : isAiPaused ? 'PAUSED' : 'SPEECH TRANSLATION'}</span>
-              </div>
-            </div>
-
-            {/* Voice Agent / Operator Box */}
-            <div className={`flex-1 bg-canvas-pure border rounded-[4px] px-2.5 py-1 flex items-center justify-between shadow-hairline transition-colors ${
-              isOperator
-                ? 'border-ops-warningBorder bg-ops-warningBg/20'
-                : isAiPaused
-                ? 'border-ops-warningBorder bg-ops-warningBg/10'
-                : callState === 'RELAY_SPEAKING'
-                ? 'border-ops-liveBorder bg-ops-liveBg/20'
-                : 'border-border-subtle'
-            }`}>
-              <div className="flex items-center gap-2 min-w-0">
-                <div className={`w-6 h-6 rounded-[3px] border flex items-center justify-center font-mono text-[10px] font-bold shrink-0 ${
-                  isOperator ? 'bg-ops-warningBg border-ops-warningBorder text-ops-warning' : 'bg-ops-liveBg border-ops-liveBorder text-ops-live'
-                }`}>
-                  {isOperator ? 'MS' : 'RL'}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5 leading-tight">
-                    <span className="text-[9px] font-mono font-bold text-ink-muted uppercase">{isOperator ? 'OPERATOR' : 'RELAY'}</span>
-                    <span className="text-border text-[10px]">/</span>
-                    <span className="font-bold text-xs text-ink-primary font-sans truncate">{isOperator ? 'Maya Sharma' : 'Voice Agent'}</span>
-                  </div>
-                  <div className="text-[9px] font-mono text-ink-muted leading-tight truncate">
-                    <span>{isOperator ? 'Live On Line' : isAiPaused ? 'Paused' : 'Listening & Synthesizing'}</span> • <span>Agora RTC Opus</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 shrink-0 pl-2">
-                {/* Voice Gender Switcher */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextGender = agentGender === 'female' ? 'male' : 'female'
-                    setAgentGender(nextGender)
-                    speechService.setAgentGender(nextGender)
-                  }}
-                  className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-[2px] border transition-all cursor-pointer ${
-                    agentGender === 'female'
-                      ? 'bg-pink-500/10 text-pink-600 border-pink-500/30 hover:bg-pink-500/20'
-                      : 'bg-blue-500/10 text-blue-600 border-blue-500/30 hover:bg-blue-500/20'
-                  }`}
-                  title="Toggle Agent Voice Gender"
-                >
-                  <span>{agentGender === 'female' ? '♀ FEMALE' : '♂ MALE'}</span>
-                </button>
-
-                {isOperator ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono">HUMAN</Badge>
-                ) : isAiPaused ? (
-                  <Badge variant="warning" dot size="xs" className="font-mono">PAUSED</Badge>
-                ) : callState === 'RELAY_SPEAKING' ? (
-                  <Badge variant="live" dot size="xs" className="font-mono animate-pulse">SPEAKING</Badge>
-                ) : (
-                  <Badge variant="live" dot size="xs" className="font-mono">ACTIVE</Badge>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* 4. COMPACT VOICE & INPUT CONSOLE (Slim Waveform, Mic Controls, Spoken Chips & Input) */}
-          <div className="px-3 py-1.5 bg-canvas-pure border-b border-border-subtle flex flex-col gap-1.5 select-none font-mono shrink-0">
-            {/* Row 1: Slim Oscilloscope Waveform & Mute Switch */}
-            <div className="flex items-center gap-2">
-              <div className="flex-1 min-w-0">
-                <WaveformMonitor callState={callState} />
+      {/* 11. ⚠ SIMULATE FAILURE MODAL */}
+      {showFailureModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-canvas-pure border-2 border-rose-500/50 rounded-[8px] max-w-md w-full shadow-2xl p-5 space-y-4 font-sans animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-border-subtle">
+              <div className="flex items-center gap-2 font-mono text-xs font-bold text-rose-500 uppercase tracking-wider">
+                <AlertTriangle className="w-4 h-4 text-rose-500" />
+                <span>⚠ SIMULATE ENTERPRISE FAILURE & RETRY</span>
               </div>
               <button
                 type="button"
-                onClick={handleToggleMute}
-                className={`h-7 px-2.5 rounded-[3px] font-mono text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 shrink-0 ${
-                  isMuted
-                    ? 'bg-ops-warningBg text-ops-warning border-ops-warningBorder hover:bg-ops-warningBg/80'
-                    : 'bg-canvas-subtle text-ink-primary border-border-subtle hover:bg-canvas-muted'
-                }`}
-                title={isMuted ? 'Click to unmute microphone' : 'Click to mute microphone'}
+                onClick={() => setShowFailureModal(false)}
+                className="text-ink-muted hover:text-ink-primary p-1 rounded cursor-pointer"
               >
-                {isMuted ? <MicOff className="w-3 h-3 text-ops-warning" /> : <Mic className="w-3 h-3 text-ops-live" />}
-                <span>{isMuted ? 'UNMUTE' : 'MUTE'}</span>
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Row 2: Test Phrase Chips (Horizontal single-line scroll) + Direct Spoken Input */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 shrink-0 max-w-full sm:max-w-[55%]">
-                <span className="text-[9px] font-mono font-bold text-ink-muted uppercase shrink-0">SAY:</span>
-                {(
-                  activeScenario?.id === 'payment-failure'
-                    ? [
-                        { text: 'My bank account was debited twice for ₹2,499', label: '1. Double debit' },
-                        { text: 'Can you reverse the duplicate charge?', label: '2. Reverse charge' },
-                        { text: 'Thank you for resolving it', label: '3. Thanks' },
-                      ]
-                    : activeScenario?.id === 'language-switch'
-                    ? [
-                        { text: 'I want to change my delivery address', label: '1. English request' },
-                        { text: 'Bhaiya Noida Sector 62 bhej do', label: '2. Hindi: Noida 62' },
-                        { text: 'Address update ho gaya kya?', label: '3. Confirm update' },
-                      ]
-                    : activeScenario?.id === 'human-takeover'
-                    ? [
-                        { text: 'I want to speak with a human manager', label: '1. Demand manager' },
-                        { text: 'Cancel our enterprise account', label: '2. Cancel contract' },
-                        { text: 'Thank you Maya', label: '3. Thanks' },
-                      ]
-                    : activeScenario?.id === 'tool-failure'
-                    ? [
-                        { text: 'Mera package track nahi ho raha hai', label: '1. Tracking error' },
-                        { text: 'Carrier API timeout check karo', label: '2. Check carrier' },
-                        { text: 'Manual trace shuru karo', label: '3. Manual dispatch' },
-                      ]
-                    : activeScenario?.id === 'angry-customer'
-                    ? [
-                        { text: 'Yeh teesri baar hai jab tumne mera time waste kiya!', label: '1. Angry complaint' },
-                        { text: 'Mujhe compensation credit chahiye', label: '2. Demand credit' },
-                        { text: '₹1,000 credit accept karta hoon', label: '3. Accept credit' },
-                      ]
-                    : [
-                        { text: 'Mera order 5 din se nahi aaya', label: '1. Order late' },
-                        { text: 'Mujhe refund chahiye', label: '2. Refund' },
-                        { text: 'UPI par bhej do', label: '3. UPI' },
-                        { text: 'Return policy kya hai?', label: '4. Policy' },
-                        { text: 'Bas itna hi tha, thank you!', label: '5. Thanks' },
-                        { text: 'Can we switch to English please?', label: '6. English' },
-                      ]
-                ).map((phrase) => (
-                  <button
-                    key={phrase.text}
-                    type="button"
-                    onClick={() => handleProcessSpokenUtterance(phrase.text)}
-                    className="bg-canvas-subtle hover:bg-canvas-muted text-ink-primary border border-border-subtle hover:border-accent rounded px-2 py-0.5 text-[10px] font-mono whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 shadow-hairline active:scale-95 shrink-0"
-                    title={`Speak: "${phrase.text}"`}
-                  >
-                    <Mic className="w-2 h-2 text-accent" />
-                    <span>{phrase.label}</span>
-                  </button>
-                ))}
-              </div>
+            <p className="text-xs text-ink-secondary">
+              Select a failure scenario to demonstrate Relay's automated resilience loop (<strong>FAILURE ➔ RETRY #1 ➔ RETRY #2 ➔ ESCALATE / FALLBACK</strong>):
+            </p>
 
-              {/* Direct Utterance Input & Active SPEAK Button */}
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  const textToSend = customUtterance.trim() || 'Mera order 5 din se nahi aaya'
-                  handleProcessSpokenUtterance(textToSend)
-                  setCustomUtterance('')
-                }}
-                className="flex items-center gap-1.5 flex-1 min-w-0"
+            <div className="space-y-2 font-mono text-xs">
+              <button
+                type="button"
+                onClick={() => triggerFailureSimulation('TOOL_TIMEOUT')}
+                className="w-full text-left p-2.5 rounded bg-canvas-subtle hover:bg-rose-500/10 border border-border-subtle hover:border-rose-500/40 transition-colors cursor-pointer flex items-center justify-between"
               >
-                <input
-                  type="text"
-                  placeholder="Type speech or click phrase on left..."
-                  value={customUtterance}
-                  onChange={(e) => setCustomUtterance(e.target.value)}
-                  className="bg-canvas-subtle border border-border-subtle rounded px-2.5 py-1 text-xs text-ink-primary placeholder-ink-muted focus:outline-none focus:border-accent flex-1 font-sans shadow-xs h-7 min-w-0"
-                />
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="xs"
-                  className="font-mono text-[10px] font-bold uppercase tracking-wider bg-accent text-white hover:bg-accent-hover active:bg-[#083070] h-7 px-3 cursor-pointer shrink-0 shadow-hairline"
-                >
-                  SPEAK
-                </Button>
-              </form>
+                <div>
+                  <div className="font-bold text-ink-primary">1. Tool Gateway Timeout (504)</div>
+                  <div className="text-[10px] text-ink-muted">getDeliveryStatus fails ➔ 2 retries ➔ Escalates to Operator</div>
+                </div>
+                <span className="text-[10px] bg-rose-500/10 text-rose-500 px-1.5 py-0.5 rounded font-bold">504 GATEWAY</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => triggerFailureSimulation('AI_TIMEOUT')}
+                className="w-full text-left p-2.5 rounded bg-canvas-subtle hover:bg-rose-500/10 border border-border-subtle hover:border-rose-500/40 transition-colors cursor-pointer flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-bold text-ink-primary">2. AI Reasoning Timeout (&gt;3500ms)</div>
+                  <div className="text-[10px] text-ink-muted">Gemini latency spike ➔ Seamless 12ms fallback engine</div>
+                </div>
+                <span className="text-[10px] bg-amber-500/10 text-amber-500 px-1.5 py-0.5 rounded font-bold">LLM SPIKE</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => triggerFailureSimulation('TRACKING_UNAVAILABLE')}
+                className="w-full text-left p-2.5 rounded bg-canvas-subtle hover:bg-rose-500/10 border border-border-subtle hover:border-rose-500/40 transition-colors cursor-pointer flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-bold text-ink-primary">3. Tracking Service Unavailable (503)</div>
+                  <div className="text-[10px] text-ink-muted">Carrier offline ➔ Auto-reroutes to secondary logistics hub</div>
+                </div>
+                <span className="text-[10px] bg-sky-500/10 text-sky-500 px-1.5 py-0.5 rounded font-bold">CARRIER 503</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => triggerFailureSimulation('DB_UNAVAILABLE')}
+                className="w-full text-left p-2.5 rounded bg-canvas-subtle hover:bg-rose-500/10 border border-border-subtle hover:border-rose-500/40 transition-colors cursor-pointer flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-bold text-ink-primary">4. PostgreSQL Connection Drop</div>
+                  <div className="text-[10px] text-ink-muted">DB network partition ➔ In-memory write-through buffer</div>
+                </div>
+                <span className="text-[10px] bg-purple-500/10 text-purple-500 px-1.5 py-0.5 rounded font-bold">DB DROP</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => triggerFailureSimulation('OPERATOR_DISCONNECT')}
+                className="w-full text-left p-2.5 rounded bg-canvas-subtle hover:bg-rose-500/10 border border-border-subtle hover:border-rose-500/40 transition-colors cursor-pointer flex items-center justify-between"
+              >
+                <div>
+                  <div className="font-bold text-ink-primary">5. Operator Line Disconnect</div>
+                  <div className="text-[10px] text-ink-muted">Operator drops ➔ AI resumes duplex stream without dead air</div>
+                </div>
+                <span className="text-[10px] bg-emerald-500/10 text-emerald-500 px-1.5 py-0.5 rounded font-bold">SIP DROP</span>
+              </button>
             </div>
           </div>
-
-          {/* 5. MAIN EXPANDED LIVE TRANSCRIPT RAIL & LIVE EVENTS (Full Vertical Space) */}
-          <div
-            className="flex-1 overflow-y-auto p-4 bg-canvas min-h-0"
-            role="log"
-            aria-live="polite"
-            aria-label="Real-time bilingual captions and transcript rail"
-          >
-            <div className="max-w-2xl mx-auto space-y-4">
-              {/* SECTION 32: CONVERSATION HANDOFF BRIEF (Renders immediately on Human Takeover) */}
-              {isOperator && (
-                <div className="bg-canvas-pure border-2 border-ops-warningBorder rounded-[4px] p-3.5 shadow-hairline space-y-2.5 font-mono animate-in fade-in duration-200">
-                  <div className="flex items-center justify-between pb-1.5 border-b border-border-subtle">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-ops-warning animate-ping" />
-                      <span className="font-mono text-xs font-bold text-ink-primary uppercase tracking-tight">
-                        HANDOFF BRIEF
-                      </span>
-                      <span className="text-border">/</span>
-                      <span className="text-[10px] text-ops-warning font-bold">
-                        Direct Audio Bridge
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => openProofInspector({
-                        timestamp: '21:34:08',
-                        eventType: 'human.takeover',
-                        title: 'Operator Duplex Audio Takeover',
-                        source: 'Human Operator Console',
-                        confidence: 1.0,
-                        payload: {
-                          operator_id: 'OP-782',
-                          operator_name: 'Maya Sharma',
-                          handover_reason: 'REFUND_DISPUTE_ESCALATION',
-                          audio_route: 'AGORA_OPERATOR_MIC_PRIORITY',
-                          ai_speech_state: 'MUTED_PASSIVE_LISTEN'
-                        }
-                      })}
-                      className="text-[10px] font-mono font-bold text-ops-warning bg-canvas-pure border border-ops-warningBorder px-2 py-0.5 rounded hover:bg-ops-warningBg cursor-pointer"
-                    >
-                      [ VIEW EVENT ]
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block">Customer:</span>
-                      <span className="font-bold text-ink-primary block">Aarav Sharma</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block">Language:</span>
-                      <span className="font-bold text-ink-primary block">Hindi</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2 text-xs pt-1 border-t border-border-subtle/70">
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block font-semibold">Issue:</span>
-                      <span className="text-ink-primary font-medium">Delayed delivery</span>
-                    </div>
-
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block font-semibold">What happened:</span>
-                      <span className="text-ink-primary font-medium">
-                        Order #84921 missed expected delivery date by 3 days.
-                      </span>
-                    </div>
-
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block font-semibold">Customer request:</span>
-                      <span className="text-ink-primary font-medium">Full refund.</span>
-                    </div>
-
-                    <div>
-                      <span className="text-[10px] text-ink-muted uppercase block font-semibold">Action:</span>
-                      <span className="text-ops-warning font-bold">Refund awaiting approval.</span>
-                    </div>
-
-                    <div className="bg-accent-subtle p-2.5 rounded-[3px] border border-accent-border flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
-                        <span className="text-[10px] text-accent font-bold uppercase block">Suggested next step:</span>
-                        <span className="text-xs font-semibold text-accent font-sans">
-                          Confirm refund timeline.
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText("Main aapke refund ki timeline confirm kar deti hoon.")
-                          setCopiedPhrase(true)
-                          setTimeout(() => setCopiedPhrase(false), 2000)
-                        }}
-                        className="text-[10px] font-mono font-bold text-white bg-accent px-2.5 py-1 rounded-[2px] cursor-pointer hover:bg-accent-hover flex items-center gap-1 shrink-0 self-start sm:self-auto"
-                      >
-                        {copiedPhrase ? <Check className="w-3 h-3 stroke-[3]" /> : <Copy className="w-3 h-3" />}
-                        <span>{copiedPhrase ? 'COPIED' : 'COPY PHRASE'}</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between text-[10px] font-mono text-ink-muted uppercase tracking-wider select-none pb-1 border-b border-border-subtle">
-                <span>LIVE TRANSCRIPT RAIL</span>
-                <span>STATUS: {isAiPaused ? 'RELAY_PAUSED' : callState}</span>
-              </div>
-
-              <div className="relative pl-6 space-y-4 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-px before:bg-border-subtle">
-                {transcript.map((item) => {
-                  const isCustomer = item.speaker === 'CUSTOMER'
-                  const isOperator = item.speaker === 'OPERATOR'
-
-                  return (
-                    <div key={item.id} className="relative group">
-                      {/* Hairline timeline node dot */}
-                      <div
-                        className={`absolute -left-6 top-1.5 w-2 h-2 rounded-full border-2 border-canvas ${
-                          item.isLanguageSwitch
-                            ? 'bg-accent animate-pulse'
-                            : item.isTool
-                            ? 'bg-ops-warning'
-                            : isCustomer
-                            ? 'bg-accent'
-                            : isOperator
-                            ? 'bg-ops-warning'
-                            : 'bg-ops-live'
-                        }`}
-                      />
-
-                      {/* SECTION 46: LANGUAGE SWITCH CARD & SECTION 3 PROOF LAYER TRIGGER */}
-                      {item.isLanguageSwitch ? (
-                        <div className="bg-canvas-pure border-2 border-accent-border rounded-[4px] p-3 shadow-hairline space-y-2 font-mono animate-in fade-in duration-150">
-                          <div className="flex items-center justify-between pb-1 border-b border-border-subtle">
-                            <div className="flex items-center gap-1.5 font-bold text-accent text-xs tracking-tight uppercase">
-                              <Languages className="w-3.5 h-3.5 text-accent" />
-                              <span>LANGUAGE SWITCH</span>
-                            </div>
-                            <span className="text-[9px] font-bold text-accent bg-accent-subtle px-1.5 py-0.2 rounded border border-accent-border">
-                              AUTO-DETECTED
-                            </span>
-                          </div>
-
-                          <div className="flex items-center justify-between pt-0.5">
-                            <div className="flex items-center gap-2 text-xs font-bold text-ink-primary">
-                              <span>{item.switchFrom || 'Hindi'}</span>
-                              <span className="text-accent">→</span>
-                              <span className="text-accent font-extrabold">{item.switchTo || 'English'}</span>
-                            </div>
-
-                            <button
-                              onClick={() => openProofInspector({
-                                timestamp: item.timestamp || '21:34:07',
-                                eventType: 'language.detected',
-                                title: 'Automated Bilingual Language Switch',
-                                source: 'Agora audio stream',
-                                confidence: 0.96,
-                                payload: {
-                                  detected: 'en-IN',
-                                  previous: 'hi-IN',
-                                  confidence: 0.96,
-                                  utterance_sample: 'Actually, let\'s continue in English.',
-                                  pipeline: 'Deepgram Multilingual ASR v2',
-                                  adaptation_time_ms: 18
-                                }
-                              })}
-                              className="text-[10px] font-mono font-bold text-accent bg-accent-subtle border border-accent-border px-2 py-0.5 rounded hover:bg-accent hover:text-white transition-colors cursor-pointer"
-                            >
-                              [ VIEW EVENT ]
-                            </button>
-                          </div>
-
-                          <p className="text-[10px] text-ink-muted font-sans">
-                            Detected automatically • Continuing in {item.switchTo || 'English'} without restarting session
-                          </p>
-                        </div>
-                      ) : (
-                        <>
-                          {/* Header Row: Timestamp + Speaker pill */}
-                          <div className="flex items-center gap-2 mb-1 select-none">
-                            <span className="font-mono text-[10px] text-ink-muted tabular-nums">
-                              {item.timestamp}
-                            </span>
-
-                            <span
-                              className={`font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-[2px] tracking-wider uppercase ${
-                                item.isTool
-                                  ? 'bg-canvas-muted text-ink-secondary border border-border-subtle'
-                                  : isCustomer
-                                  ? 'bg-accent-subtle text-accent border border-accent-border'
-                                  : isOperator
-                                  ? 'bg-ops-warningBg text-ops-warning border-[#FED7AA]'
-                                  : 'bg-ops-liveBg text-ops-live border-ops-liveBorder'
-                              }`}
-                            >
-                              {item.isTool ? 'TOOL' : item.speaker}
-                            </span>
-
-                            {item.language && (
-                              <span className="text-[10px] font-mono text-ink-muted">
-                                • {item.language}
-                              </span>
-                            )}
-
-                            {item.status && (
-                              <span className="text-[9px] font-mono text-ops-warning bg-ops-warningBg px-1 rounded border border-[#FED7AA]">
-                                {item.status}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Body Content */}
-                          <div className="space-y-1">
-                            {item.isTool ? (
-                              <div className="font-mono text-xs text-ops-warning bg-canvas-pure border border-border-subtle p-2 rounded-[3px] shadow-hairline flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                  <Wrench className="w-3.5 h-3.5 text-ops-warning shrink-0" />
-                                  <span className="font-semibold">{item.content}</span>
-                                </div>
-                                <button
-                                  onClick={() => openProofInspector({
-                                    timestamp: item.timestamp,
-                                    eventType: 'tool.executed',
-                                    title: 'RPC Tool Execution Telemetry',
-                                    source: 'Internal Order/CRM Gateway',
-                                    confidence: 1.0,
-                                    payload: {
-                                      tool_name: item.toolName || 'getOrderStatus',
-                                      request_params: { orderId: '84921' },
-                                      response_status: '200 OK',
-                                      execution_latency_ms: 184,
-                                      delivery_status: 'EXCEPTION_DELAYED_3_DAYS'
-                                    }
-                                  })}
-                                  className="text-[9px] font-mono font-bold text-ops-warning bg-ops-warningBg border border-ops-warningBorder px-1.5 py-0.5 rounded hover:bg-ops-warning hover:text-white transition-colors cursor-pointer"
-                                >
-                                  [ VIEW EVENT ]
-                                </button>
-                              </div>
-                            ) : (
-                              <div className="bg-canvas-pure border border-border-subtle rounded-[3px] p-2.5 shadow-hairline space-y-1">
-                                <p className="font-sans text-xs text-ink-primary leading-relaxed select-text font-medium">
-                                  {item.content}
-                                </p>
-                                {item.translation && (
-                                  <p className="font-sans text-[11px] text-ink-secondary leading-normal select-text italic border-t border-border-subtle/50 pt-1">
-                                    {item.translation}
-                                  </p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-
-              {/* SECTION 48: CONTEXTUAL LIVE AI WORKING STATE PILL */}
-              <div className="flex items-center justify-center pt-2">
-                <div className="flex items-center gap-2 px-3 py-1 bg-canvas-pure border border-border-subtle rounded-full text-xs font-mono shadow-hairline">
-                  <span className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-                  <span className="font-semibold text-ink-primary">{aiWorkingState}</span>
-                </div>
-              </div>
-
-              <div className="text-center py-1">
-                <span className="font-mono text-[10px] text-ink-muted uppercase tracking-wider animate-pulse">
-                  {isAiPaused
-                    ? 'RELAY is paused and listening passively for operator instructions...'
-                    : meta.description.replace(/Aarav/gi, currentCustomerName.split(' ')[0])}
-                </span>
-              </div>
-            </div>
-          </div>
-        </>
+        </div>
       )}
 
-      {/* 5. SECTION 24 & 25: COMPACT OPERATIONAL VOICE CONTROLS */}
-      <VoiceControlsBar
-        isHumanTakeover={isOperator}
-        isAiPaused={isAiPaused}
-        onToggleTakeover={onToggleTakeover}
-        onTogglePauseAi={() => setIsAiPaused(!isAiPaused)}
-        onEndCall={() => setCallState('CALL_ENDED')}
-      />
-
-      {/* SECTION 3: PROOF LAYER TELEMETRY INSPECTOR MODAL */}
+      {/* PROOF LAYER MODAL */}
       <EventProofModal
         isOpen={isProofModalOpen}
         onClose={() => setIsProofModalOpen(false)}

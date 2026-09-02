@@ -1,4 +1,4 @@
-﻿# Render Infrastructure as Code Blueprint
+# Render Infrastructure as Code Blueprint
 services:
   - type: web
     name: relay-backend
@@ -11,6 +11,8 @@ services:
         value: production
       - key: PORT
         value: 10000
+      - key: DATABASE_URL
+        sync: false
       - key: AGORA_APP_ID
         sync: false
       - key: AGORA_APP_CERTIFICATE

@@ -6,11 +6,11 @@
  */
 
 import { lookupCustomer } from './customer.js'
-import { lookupOrder, getDeliveryStatus } from './orders.js'
+import { lookupOrder, getDeliveryStatus, extractOrderId } from './orders.js'
 import { evaluateRefundPolicy, issueRefund } from './refunds.js'
 import { createTicket } from './tickets.js'
 import { escalateCase } from './escalation.js'
-import { ToolRouter } from '../toolRouter.js'
+import { ToolRouter, normalizeToolPayload } from '../toolRouter.js'
 import { TOOL_REGISTRY, getApprovedToolDefinitions, isToolApproved, getToolDescriptor } from '../toolRegistry.js'
 
 export {
@@ -21,7 +21,9 @@ export {
   issueRefund,
   createTicket,
   escalateCase,
+  extractOrderId,
   ToolRouter,
+  normalizeToolPayload,
   TOOL_REGISTRY,
   getApprovedToolDefinitions,
   isToolApproved,
@@ -45,7 +47,6 @@ export const AVAILABLE_TOOLS = {
  * Delegates exclusively to ToolRouter.
  */
 export async function executeTool(toolName, params = {}, context = {}) {
-  // Alias normalization
   const normalizedTool = toolName === 'getOrderStatus' ? 'lookupOrder' : toolName === 'refundOrder' ? 'issueRefund' : toolName
   return ToolRouter.execute(normalizedTool, params, context)
 }

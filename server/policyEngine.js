@@ -37,14 +37,14 @@ export const settledRefundsLedger = new Set()
 export async function evaluatePolicyGates(params = {}) {
   const evaluatedAt = new Date().toISOString()
   const customerId = params.customerId || 'CUS-1042'
-  const orderId = String(params.orderId || '84921').replace(/^#/, '').trim()
-  const amount = Number(params.amount) || 1499
-  const caseId = params.caseId || 'RLY-1042'
+  const orderId = String(params.orderId || '72143').replace(/^#/, '').trim()
+  const caseId = params.caseId || 'RLY-72143'
 
   // Gate 1: Order Exists?
   const orderRes = await lookupOrder(orderId)
   const isOrderValid = Boolean(orderRes.success && orderRes.orderId)
-  const orderTotal = orderRes.amount || 1499
+  const orderTotal = Number(orderRes.amount) || Number(params.amount) || 2899
+  const amount = Number(params.amount) || orderTotal
 
   // Gate 2: Customer Verified?
   const customerRes = await lookupCustomer(customerId)
@@ -77,7 +77,7 @@ export async function evaluatePolicyGates(params = {}) {
     isNoDuplicateRefund
 
   // Risk Classification
-  const risk = amount > 2500 ? 'high' : amount >= 1000 ? 'medium' : 'low'
+  const risk = amount > 5000 ? 'HIGH' : amount >= 1000 ? 'MEDIUM' : 'LOW'
   const requiresApproval = amount >= 1000 || customerTier !== 'PLATINUM'
 
   const reasons = []
@@ -91,6 +91,7 @@ export async function evaluatePolicyGates(params = {}) {
     allowed: allPassed,
     requiresApproval,
     risk,
+    amount: orderTotal,
     policyId: 'POL-REFUND-3.2',
     section: 'Section 4.1',
     evaluatedAt,

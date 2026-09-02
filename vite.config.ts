@@ -9,6 +9,9 @@ import { processAgentTurn } from './server/agentOrchestrator.js'
 import { listIdempotencyKeys } from './server/idempotencyStore.js'
 import { OperatorService } from './server/operatorService.js'
 import { recoverCaseState } from './server/stateEngine.js'
+import { trackOrderAcrossPlatforms } from './server/services/logisticsAggregator.js'
+import { processRefundTransaction } from './server/services/paymentGateway.js'
+import { customerDatabase } from './server/tools/customer.js'
 
 function agoraApiPlugin(): Plugin {
   return {
@@ -474,6 +477,190 @@ function agoraApiPlugin(): Plugin {
             totalOperators: OperatorService.getOperators().length,
             operators: OperatorService.getOperators(),
           }))
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 12. MOCK ENTERPRISE ORDER SERVICE: /api/enterprise/orders/*
+      server.middlewares.use('/api/enterprise/orders', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Client')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        const url = new URL(req.url || '', `http://${req.headers.host}`)
+        const orderIdMatch = (req.url || '').match(/\/([A-Za-z0-9_-]+)/)
+        const orderId = orderIdMatch ? orderIdMatch[1] : (url.searchParams.get('orderId') || '84921')
+        const orderData = await trackOrderAcrossPlatforms(orderId)
+
+        res.statusCode = 200
+        res.end(JSON.stringify({
+          success: true,
+          service: 'MOCK_ORDER_SERVICE_REST_V2',
+          orderId,
+          order: orderData,
+          financialStatus: 'PAID',
+          currency: orderData.currency || 'INR',
+          amount: orderData.amount || 1499,
+          placedAt: orderData.placedAt || new Date(Date.now() - 4 * 86400000).toISOString(),
+          items: orderData.items || []
+        }))
+      })
+
+      // 13. MOCK ENTERPRISE LOGISTICS & TRACKING SERVICE: /api/enterprise/tracking/*
+      server.middlewares.use('/api/enterprise/tracking', async (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Client')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        const url = new URL(req.url || '', `http://${req.headers.host}`)
+        const orderIdMatch = (req.url || '').match(/\/([A-Za-z0-9_-]+)/)
+        const orderId = orderIdMatch ? orderIdMatch[1] : (url.searchParams.get('orderId') || '84921')
+        const trackData = await trackOrderAcrossPlatforms(orderId)
+
+        res.statusCode = 200
+        res.end(JSON.stringify({
+          success: true,
+          service: 'MOCK_LOGISTICS_CARRIER_REST_V2',
+          orderId,
+          carrier: trackData.carrier,
+          trackingNumber: trackData.trackingNumber,
+          status: trackData.status,
+          lastLocation: trackData.lastLocation,
+          delayDays: trackData.delayDays,
+          isSlaBreached: trackData.isSlaBreached,
+          checkpoints: trackData.checkpoints || []
+        }))
+      })
+
+      // 14. MOCK ENTERPRISE PAYMENT & NPCI REFUND SERVICE: /api/enterprise/payments/refund
+      server.middlewares.use('/api/enterprise/payments/refund', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Client')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const orderId = data.orderId || '84921'
+              const amount = data.amount || 1499
+              const result = await processRefundTransaction({
+                orderId,
+                amount,
+                currency: 'INR',
+                reason: data.reason || 'SLA delay exception approved under Policy POL-REFUND-3.2'
+              })
+              res.statusCode = 200
+              res.end(JSON.stringify({
+                success: true,
+                service: 'MOCK_PAYMENT_GATEWAY_NPCI_V2',
+                ...result
+              }))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Refund processing error' }))
+            }
+          })
+          return
+        }
+
+        res.statusCode = 405
+        res.end(JSON.stringify({ error: 'Method not allowed' }))
+      })
+
+      // 15. MOCK ENTERPRISE CRM CUSTOMER SERVICE: /api/enterprise/crm/customers
+      server.middlewares.use('/api/enterprise/crm/customers', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Client')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        const custMatch = (req.url || '').match(/\/([A-Za-z0-9_-]+)/)
+        const customerId = custMatch ? custMatch[1] : 'CUS-1042'
+        const customer = (customerDatabase as any)[customerId] || (customerDatabase as any)['CUS-1042']
+
+        res.statusCode = 200
+        res.end(JSON.stringify({
+          success: true,
+          service: 'MOCK_CRM_REST_V2',
+          customer
+        }))
+      })
+
+      // 16. MOCK ENTERPRISE CRM TICKET SERVICE: /api/enterprise/crm/tickets
+      server.middlewares.use('/api/enterprise/crm/tickets', (req, res) => {
+        res.setHeader('Content-Type', 'application/json')
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Relay-Client')
+
+        if (req.method === 'OPTIONS') {
+          res.statusCode = 204
+          res.end()
+          return
+        }
+
+        if (req.method === 'POST') {
+          let body = ''
+          req.on('data', (chunk) => {
+            body += chunk
+          })
+          req.on('end', async () => {
+            try {
+              const data = JSON.parse(body || '{}')
+              const ticketId = `TCK-${Math.floor(Math.random() * 90000 + 10000)}`
+              res.statusCode = 201
+              res.end(JSON.stringify({
+                success: true,
+                service: 'MOCK_CRM_TICKET_REST_V2',
+                ticketId,
+                caseId: data.caseId || 'RLY-1042',
+                orderId: data.orderId || '84921',
+                status: 'OPEN',
+                priority: data.priority || 'HIGH',
+                summary: data.summary || 'Delayed delivery SLA exception',
+                assignedDesk: 'LOGISTICS_EXCEPTIONS',
+                createdAt: new Date().toISOString()
+              }))
+            } catch (err: any) {
+              res.statusCode = 500
+              res.end(JSON.stringify({ error: err?.message || 'Ticket creation error' }))
+            }
+          })
           return
         }
 

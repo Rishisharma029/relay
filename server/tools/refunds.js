@@ -1,51 +1,44 @@
-/**
- * RELAY Tool: refunds.js
- * Financial policy validation and atomic UPI refund execution.
- */
+import { lookupOrder, extractOrderId } from './orders.js'
+import { processRefundTransaction } from '../services/paymentGateway.js'
+import { evaluatePolicyGates } from '../policyEngine.js'
 
-function normalizeOrderId(id) {
-  if (!id) return '84921'
-  const clean = String(id).replace(/[^0-9]/g, '')
-  return clean || '84921'
-}
+export async function evaluateRefundPolicy(orderParam = '72143', callerSuppliedAmount = null) {
+  const cleanId = extractOrderId(orderParam) || '72143'
 
-export async function evaluateRefundPolicy(orderId = '84921', amount = 1499) {
-  await new Promise((res) => setTimeout(res, 38))
-
-  const cleanId = normalizeOrderId(orderId)
-  const numericAmount = Number(amount) || 1499
-  const requiresHumanApproval = numericAmount >= 1000
+  // Policy Engine is the single source of truth: Order Value + Delay + Customer Eligibility + Policy Version -> DECISION
+  const policyDecision = await evaluatePolicyGates({ orderId: cleanId, amount: callerSuppliedAmount })
+  const orderRes = await lookupOrder(cleanId)
 
   return {
     success: true,
-    policyId: 'POL-REFUND-3.2',
-    eligible: true,
+    policyId: policyDecision.policyId,
+    policyVersion: '3.2.0',
+    eligible: policyDecision.checks.refundEligible,
+    allowed: policyDecision.allowed,
     orderId: cleanId,
-    amount: numericAmount,
+    amount: policyDecision.amount || orderRes.amount || 2899,
     currency: 'INR',
-    riskTier: numericAmount > 2500 ? 'HIGH' : numericAmount >= 1000 ? 'MEDIUM' : 'LOW',
-    requiresHumanApproval,
-    policyBasis: [
-      'Order delayed past SLA (+3 days)',
-      'Customer explicitly requested refund',
-      'No previous refund detected on transaction',
-      'Delivery exception verified with logistics carrier',
+    riskTier: policyDecision.risk, // 'LOW' | 'MEDIUM' | 'HIGH'
+    requiresHumanApproval: policyDecision.requiresApproval,
+    checks: policyDecision.checks,
+    policyBasis: policyDecision.reasons.length > 0 ? policyDecision.reasons : [
+      `Order delayed ${orderRes.delayDays || 4} days past SLA`,
+      'Customer identity verified',
+      'Policy POL-REFUND-3.2 Section 4.1 applied',
+      'Zero duplicate claims detected'
     ],
   }
 }
 
-import { processRefundTransaction } from '../services/paymentGateway.js'
+export async function issueRefund(orderParam = '72143', callerSuppliedAmount = null) {
+  const cleanId = extractOrderId(orderParam) || '72143'
+  const orderRes = await lookupOrder(cleanId)
+  const numericAmount = orderRes.amount || 2899
 
-export async function issueRefund(orderId = '84921', amount = 1499) {
-  const cleanId = normalizeOrderId(orderId)
-  const numericAmount = Number(amount) || 1499
-
-  const result = await processRefundTransaction({
+  return processRefundTransaction({
     orderId: cleanId,
     amount: numericAmount,
     currency: 'INR',
     reason: 'Customer refund approved by operator under SLA Policy POL-REFUND-3.2'
   })
-
-  return result
 }

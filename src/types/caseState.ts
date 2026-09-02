@@ -57,6 +57,14 @@ export interface CaseState {
   facts: Fact[]
   unknowns: string[]
 
+  orderId?: string
+  orderAmount?: number
+  orderCarrier?: string
+  orderItem?: string
+  orderAwb?: string
+  orderStatus?: string
+  orderDelayDays?: number
+
   activeAction?: ActionRequest
 
   participants: Participant[]
@@ -84,50 +92,61 @@ export interface CaseState {
 }
 
 export const INITIAL_CASE_STATE: CaseState = {
-  id: 'RLY-1042',
-  customerId: 'CUST-AARAV-01',
-  customerName: 'Aarav Sharma',
+  id: 'RLY-72143',
+  customerId: 'CUST-1042',
+  customerName: 'Aarav Patel',
   customerPhone: '+91 98201 44102',
-  customerTier: 'Platinum',
-  channelName: 'relay-case-1042',
+  customerTier: 'Platinum VIP',
+  channelName: 'relay-case-72143',
 
   language: 'Hindi',
   intent: 'refund_request',
   sentiment: 'Frustrated ➔ Neutral',
 
+  orderId: '72143',
+  orderAmount: 2899,
+  orderCarrier: 'Delhivery Express',
+  orderItem: 'Mechanical Gaming Keyboard',
+  orderAwb: 'DL-721438910',
+  orderStatus: 'DELAYED_IN_TRANSIT',
+  orderDelayDays: 4,
+
   facts: [
-    { id: 'f-1', label: 'Order #84921', verified: true, source: 'Order Gateway' },
-    { id: 'f-2', label: '₹1,499', verified: true, source: 'Payment Ledger' },
-    { id: 'f-3', label: 'Expected Aug 24', verified: true, source: 'Logistics SLA' },
-    { id: 'f-4', label: 'Delivery exception', verified: true, source: 'BlueDart Tracking' },
+    { id: 'f-1', label: 'Customer Identity Verified (Aarav Patel · Platinum VIP)', verified: true, source: 'CRM Gateway' },
+    { id: 'f-2', label: 'Order #72143 Delayed 4 Days (Delhivery Express)', verified: true, source: 'Logistics Gateway' },
+    { id: 'f-3', label: 'Eligible under Policy POL-REFUND-3.2 (Delay > 3 days)', verified: true, source: 'Knowledge Engine' },
+    { id: 'f-4', label: 'Zero prior refunds on record (Dispute Rate 0.0%)', verified: true, source: 'Payment Ledger' },
   ],
 
-  unknowns: [
-    'Customer received failed-delivery notice',
-    'Customer preference after refund',
-  ],
+  unknowns: [],
 
   activeAction: {
-    id: 'appr-1042-99042',
+    id: 'appr-72143-99042',
     type: 'REFUND',
-    title: 'Refund ₹1,499',
-    amount: 1499,
+    title: 'Refund Settlement',
+    amount: 2899,
     currency: 'INR',
     riskTier: 'MEDIUM',
-    policyId: 'POL-DELIVERY-DELAY-01',
+    policyId: 'POL-REFUND-3.2',
+    policyUsed: {
+      policyId: 'POL-REFUND-3.2',
+      name: 'Dispute Resolution & Instant Settlement Matrix',
+      section: 'Section 4.1 — Immediate Settlement Protocol',
+    },
     justification: [
-      'Delivery exception confirmed',
+      'Carrier SLA breach confirmed (4 days delayed)',
       'Customer explicitly requested refund',
+      'Policy POL-REFUND-3.2 qualifies 100% electronic payout'
     ],
     status: 'PENDING',
   },
 
   participants: [
-    { id: 'p-1', role: 'CUSTOMER', name: 'Aarav Mehta', joinedAt: '21:33:40', isMuted: false },
-    { id: 'p-2', role: 'AI_AGENT', name: 'RELAY AI', joinedAt: '21:33:40', isMuted: false },
-    { id: 'p-3', role: 'OPERATOR', name: 'Maya Sharma', joinedAt: '21:33:41', isMuted: false },
+    { id: 'p-1', role: 'CUSTOMER', name: 'Aarav Patel', joinedAt: '21:34:02', isMuted: false },
+    { id: 'p-2', role: 'AI_AGENT', name: 'RELAY Conversational AI', joinedAt: '21:34:02', isMuted: false },
+    { id: 'p-3', role: 'OPERATOR', name: 'Maya Sharma (Senior Operator)', joinedAt: '21:34:03', isMuted: false },
   ],
 
   takeoverState: 'AI_ACTIVE',
-  status: 'active',
+  status: 'awaiting_approval',
 }

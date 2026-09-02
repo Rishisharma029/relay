@@ -15,6 +15,7 @@ import {
   FolderKanban,
   SlidersHorizontal
 } from 'lucide-react'
+import { useCaseState } from '../contexts/CaseStateContext'
 
 export interface CaseRecord {
   id: string
@@ -116,11 +117,37 @@ const mockCases: CaseRecord[] = [
 
 export const CasesListView: React.FC<CasesListViewProps> = ({
   onSelectCase,
-  selectedCaseId = 'RLY-1042',
+  selectedCaseId = 'RLY-72143',
   onOpenNewCase,
 }) => {
+  const { caseState } = useCaseState()
   const [filterState, setFilterState] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
+
+  const liveAmount = caseState.orderAmount || caseState.activeAction?.amount || 2899
+  const liveStatus: CaseRecord['status'] =
+    caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved'
+      ? 'Resolved'
+      : caseState.activeAction?.status === 'DECLINED'
+      ? 'Escalated'
+      : caseState.status === 'awaiting_approval'
+      ? 'Approval'
+      : 'Active'
+
+  const cases: CaseRecord[] = [
+    {
+      id: caseState.id || 'RLY-72143',
+      customer: caseState.customerName || 'Aarav Patel',
+      phone: caseState.customerPhone || '+91 98201 44102',
+      issue: caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Delivery SLA Breach',
+      status: liveStatus,
+      age: 'Just now',
+      channel: 'Agora Voice',
+      language: caseState.language || 'Hindi / Hinglish',
+      amount: `₹${liveAmount.toLocaleString('en-IN')}`,
+    },
+    ...mockCases.filter((c) => c.id !== caseState.id && c.id !== 'RLY-1042')
+  ]
 
   const statusVariant = (status: CaseRecord['status']): BadgeVariant => {
     switch (status) {
@@ -137,7 +164,7 @@ export const CasesListView: React.FC<CasesListViewProps> = ({
     }
   }
 
-  const filteredCases = mockCases.filter((c) => {
+  const filteredCases = cases.filter((c) => {
     if (filterState === 'active' && c.status !== 'Active') return false
     if (filterState === 'approval' && c.status !== 'Approval') return false
     if (filterState === 'resolved' && c.status !== 'Resolved') return false

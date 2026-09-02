@@ -203,6 +203,41 @@ export async function trackOrderAcrossPlatforms(identifier) {
   const normalizedDigits = cleanId.replace(/[^0-9]/g, '') || '84921'
 
   const catalog = {
+    '72143': {
+      orderId: '72143',
+      amount: 2899,
+      currency: 'INR',
+      placedAt: '2026-08-20T11:00:00Z',
+      expectedDelivery: '2026-08-23T18:00:00Z',
+      status: 'delivery_exception',
+      carrier: 'Delhivery Express',
+      trackingNumber: 'DL-721438910',
+      lastLocation: 'Mumbai Logistics Hub (Bhiwandi Gateway)',
+      exceptionCode: 'COURIER_DELAY_TRANSIT',
+      delayDays: 4,
+      isSlaBreached: true,
+      items: [{ sku: 'SKU-KEYBOARD-RGB', name: 'Mechanical Gaming Keyboard', qty: 1, price: 2899 }],
+      checkpoints: [
+        { location: 'Warehouse Pune', timestamp: '2026-08-20 14:00', activity: 'Package Dispatched' },
+        { location: 'Bhiwandi Gateway', timestamp: '2026-08-22 09:30', activity: 'Arrived at Transit Hub' },
+        { location: 'Mumbai Central Hub', timestamp: '2026-08-24 10:00', activity: 'Delayed in Transit' }
+      ]
+    },
+    '55219': {
+      orderId: '55219',
+      amount: 899,
+      currency: 'INR',
+      placedAt: '2026-08-27T09:00:00Z',
+      expectedDelivery: '2026-08-29T18:00:00Z',
+      status: 'in_transit',
+      carrier: 'Shadowfax Quick Delivery',
+      trackingNumber: 'SF-55219001',
+      lastLocation: 'Bangalore Sorting Center',
+      exceptionCode: 'ON_SCHEDULE',
+      delayDays: 0,
+      isSlaBreached: false,
+      items: [{ sku: 'SKU-USB-HUB', name: 'USB-C Fast Charging Hub', qty: 1, price: 899 }],
+    },
     '84921': {
       orderId: '84921',
       amount: 1499,
@@ -210,7 +245,7 @@ export async function trackOrderAcrossPlatforms(identifier) {
       placedAt: '2026-08-21T14:20:00Z',
       expectedDelivery: '2026-08-24T18:00:00Z',
       status: 'delivery_exception',
-      carrier: 'BlueDart Air (Simulated)',
+      carrier: 'BlueDart Air',
       trackingNumber: 'BD-948192841',
       lastLocation: 'Hub 04 (Outer Ring Logistics Terminal, Delhi NCR)',
       exceptionCode: 'COURIER_DELAY_TRANSIT',

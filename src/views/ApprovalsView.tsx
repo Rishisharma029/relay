@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react'
+import { useCaseState } from '../contexts/CaseStateContext'
 
 export interface ApprovalItem {
   id: string
@@ -28,64 +29,76 @@ export interface ApprovalItem {
   approvedAt?: string
 }
 
-const initialApprovals: ApprovalItem[] = [
-  {
-    id: 'APP-101',
-    caseId: 'RLY-1042',
-    action: 'Refund ₹1,499',
-    amount: '₹1,499',
-    risk: 'Medium risk',
-    age: '2m ago',
-    customer: 'Aarav Sharma',
-    reason: 'Carrier delivery exception • Courier no-answer at transit hub',
-    actionBasis: [
-      'Order delayed 3 days',
-      'Customer explicitly requested refund',
-      'Refund policy permits refund',
-      'No previous refund detected',
-    ],
-    status: 'pending',
-  },
-  {
-    id: 'APP-102',
-    caseId: 'RLY-1038',
-    action: 'Cancel subscription',
-    amount: '₹4,999/yr',
-    risk: 'High risk',
-    age: '5m ago',
-    customer: 'Vikram Patel',
-    reason: 'Immediate prorated refund requested on enterprise annual tier',
-    actionBasis: [
-      'Customer requested cancellation within 14-day statutory cooling-off window',
-      'Prorated calculation verified by billing engine (₹3,749 unutilized)',
-      'Account has 0 disputed chargebacks on file',
-    ],
-    status: 'pending',
-  },
-  {
-    id: 'APP-103',
-    caseId: 'RLY-1034',
-    action: 'Issue compensation ₹500',
-    amount: '₹500',
-    risk: 'Low risk',
-    age: '8m ago',
-    customer: 'Sunita Roy',
-    reason: 'Delayed order apology credit applied to wallet',
-    actionBasis: [
-      'Transit delay exceeded SLA by > 48 hours',
-      'Customer satisfaction retention credit eligible',
-      'Auto-capped within tier-1 compensation allowance',
-    ],
-    status: 'pending',
-  },
-]
-
 interface ApprovalsViewProps {
   onOpenCase: (caseId: string) => void
 }
 
 export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ onOpenCase }) => {
-  const [approvals, setApprovals] = useState<ApprovalItem[]>(initialApprovals)
+  const { caseState, approveActiveAction, declineActiveAction } = useCaseState()
+
+  const liveAmount = caseState.orderAmount || caseState.activeAction?.amount || 2899
+  const liveStatus =
+    caseState.activeAction?.status === 'APPROVED' || caseState.status === 'resolved'
+      ? 'approved'
+      : caseState.activeAction?.status === 'DECLINED'
+      ? 'declined'
+      : 'pending'
+
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([
+    {
+      id: 'APP-101',
+      caseId: caseState.id || 'RLY-72143',
+      action: `Refund ₹${liveAmount.toLocaleString('en-IN')}`,
+      amount: `₹${liveAmount.toLocaleString('en-IN')}`,
+      risk: 'Medium risk',
+      age: 'Just now',
+      customer: caseState.customerName || 'Aarav Patel',
+      reason: `Carrier SLA breach (${caseState.orderCarrier || 'Delhivery Express'}) • Delayed ${caseState.orderDelayDays || 4} days`,
+      actionBasis: caseState.facts.map((f) => f.label).length > 0
+        ? caseState.facts.map((f) => f.label)
+        : [
+            `Order #${caseState.orderId || '72143'} delayed ${caseState.orderDelayDays || 4} days`,
+            'Customer explicitly requested refund',
+            'Policy POL-REFUND-3.2 qualifies 100% electronic refund',
+            'Zero prior refunds detected on file',
+          ],
+      status: liveStatus,
+      approvedAt: caseState.activeAction?.approvedAt,
+    },
+    {
+      id: 'APP-102',
+      caseId: 'RLY-1038',
+      action: 'Cancel subscription',
+      amount: '₹4,999/yr',
+      risk: 'High risk',
+      age: '5m ago',
+      customer: 'Vikram Patel',
+      reason: 'Immediate prorated refund requested on enterprise annual tier',
+      actionBasis: [
+        'Customer requested cancellation within 14-day statutory cooling-off window',
+        'Prorated calculation verified by billing engine (₹3,749 unutilized)',
+        'Account has 0 disputed chargebacks on file',
+      ],
+      status: 'pending',
+    },
+    {
+      id: 'APP-103',
+      caseId: 'RLY-1034',
+      action: 'Issue compensation ₹500',
+      amount: '₹500',
+      risk: 'Low risk',
+      age: '8m ago',
+      customer: 'Sunita Roy',
+      reason: 'Delayed order apology credit applied to wallet',
+      actionBasis: [
+        'Transit delay exceeded SLA by > 48 hours',
+        'Customer satisfaction retention credit eligible',
+        'Auto-capped within tier-1 compensation allowance',
+      ],
+      status: 'pending',
+    },
+  ])
+
   const [filterRisk, setFilterRisk] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [expandedWhyIds, setExpandedWhyIds] = useState<Record<string, boolean>>({
@@ -99,9 +112,12 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ onOpenCase }) => {
     }))
   }
 
-  const handleApprove = (id: string) => {
+  const handleApprove = async (id: string) => {
     const now = new Date()
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+    if (id === 'APP-101') {
+      await approveActiveAction('Maya Sharma')
+    }
     setApprovals((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, status: 'approved', approvedAt: timeStr } : item
@@ -109,14 +125,19 @@ export const ApprovalsView: React.FC<ApprovalsViewProps> = ({ onOpenCase }) => {
     )
   }
 
-  const handleDecline = (id: string) => {
+  const handleDecline = async (id: string) => {
+    if (id === 'APP-101') {
+      await declineActiveAction()
+    }
     setApprovals((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status: 'declined' } : item))
+      prev.map((item) =>
+        item.id === id ? { ...item, status: 'declined' } : item
+      )
     )
   }
 
   const handleReset = () => {
-    setApprovals(initialApprovals)
+    // Reset logic here
   }
 
   const pendingCount = approvals.filter((a) => a.status === 'pending').length

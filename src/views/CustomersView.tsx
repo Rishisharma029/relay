@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Calendar
 } from 'lucide-react'
+import { useCaseState } from '../contexts/CaseStateContext'
 
 interface CustomerRecord {
   id: string
@@ -192,13 +193,58 @@ interface CustomersViewProps {
 }
 
 export const CustomersView: React.FC<CustomersViewProps> = ({ onOpenCase }) => {
+  const { caseState } = useCaseState()
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('CUST-01')
   const [searchQuery, setSearchQuery] = useState<string>('')
 
-  const selectedCustomer =
-    mockCustomers.find((c) => c.id === selectedCustomerId) || mockCustomers[0]
+  const liveAmount = caseState.orderAmount || caseState.activeAction?.amount || 2899
+  const customers: CustomerRecord[] = [
+    {
+      id: 'CUST-01',
+      name: caseState.customerName || 'Aarav Patel',
+      phone: caseState.customerPhone || '+91 98201 44102',
+      interactions: 12,
+      language: caseState.language || 'Hindi / Hinglish',
+      resolutionRate: '98.2%',
+      openCasesCount: 1,
+      openCases: [
+        {
+          id: caseState.id || 'RLY-72143',
+          title: caseState.intent ? caseState.intent.replace(/_/g, ' ') : 'Delivery SLA Breach',
+          status: caseState.activeAction?.status === 'APPROVED' ? 'Refund Settled' : 'Approval Required',
+          age: 'Just now',
+          amount: `₹${liveAmount.toLocaleString('en-IN')}`,
+        },
+      ],
+      pastConversations: [
+        {
+          date: 'Aug 27, 2026',
+          topic: `Order #${caseState.orderId || '72143'} delivery SLA inquiry`,
+          resolution: 'Instant electronic refund qualified under POL-REFUND-3.2',
+          duration: '02:41',
+        },
+        {
+          date: 'Aug 04, 2026',
+          topic: 'Item delivery tracking inquiry',
+          resolution: 'Confirmed tracking number and dispatched invoice',
+          duration: '03:12',
+        },
+      ],
+      pastActions: [
+        {
+          date: 'Aug 27, 2026',
+          action: `₹${liveAmount.toLocaleString('en-IN')} UPI Refund processed (Approved by Operator Maya Sharma)`,
+          operator: 'Maya Sharma',
+        },
+      ],
+    },
+    ...mockCustomers.slice(1)
+  ]
 
-  const filteredCustomers = mockCustomers.filter((c) => {
+  const selectedCustomer =
+    customers.find((c) => c.id === selectedCustomerId) || customers[0]
+
+  const filteredCustomers = customers.filter((c) => {
     if (!searchQuery) return true
     const q = searchQuery.toLowerCase()
     return (

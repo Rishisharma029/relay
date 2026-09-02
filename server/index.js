@@ -11,13 +11,16 @@ import { URL } from 'node:url'
 import { serverConfig } from './config.js'
 import { generateRtcToken } from './tokenServer.js'
 import { startConversationalAgent, stopConversationalAgent } from './agentService.js'
-import { executeTool, TOOL_REGISTRY, getApprovedToolDefinitions } from './tools/index.js'
+import { executeTool, TOOL_REGISTRY, getApprovedToolDefinitions, normalizeToolPayload } from './tools/index.js'
 import { createApprovalRequest, processApproval, processDecline } from './approvalService.js'
 import { db } from './db/database.js'
 import { processAgentTurn } from './agentOrchestrator.js'
 import { listIdempotencyKeys } from './idempotencyStore.js'
 import { OperatorService } from './operatorService.js'
 import { recoverCaseState } from './stateEngine.js'
+import { trackOrderAcrossPlatforms } from './services/logisticsAggregator.js'
+import { processRefundTransaction } from './services/paymentGateway.js'
+import { customerDatabase } from './tools/customer.js'
 
 const PORT = Number(process.env.PORT) || serverConfig.port || 3000
 
@@ -114,13 +117,23 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result)
     }
 
-    // 5. BACKEND TOOL ENGINE: /api/tools/execute
+        // 5. BACKEND TOOL ENGINE: /api/tools/execute (Agora Custom Tool & Internal Gateway)
     if (pathname === '/api/tools/execute' && req.method === 'POST') {
       const data = await readBody(req)
-      const toolName = data.tool || data.toolName || 'getOrderStatus'
-      const params = data.params || data.parameters || {}
-      const result = await executeTool(toolName, params)
-      return sendJson(res, 200, result)
+      const normalized = normalizeToolPayload(data)
+
+      if (!normalized.valid) {
+        return sendJson(res, 400, {
+          success: false,
+          error: normalized.error,
+          code: 'INVALID_TOOL_PAYLOAD',
+          received: data,
+        })
+      }
+
+      const result = await executeTool(normalized.tool, normalized.params)
+      const statusCode = result.success ? 200 : (result.failureState === 'TOOL_ERROR' ? 400 : 200)
+      return sendJson(res, statusCode, result)
     }
 
     // 5.1 TOOL REGISTRY: /api/tools/registry
@@ -245,6 +258,92 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         totalOperators: OperatorService.getOperators().length,
         operators: OperatorService.getOperators(),
+      })
+    }
+
+    // 12. MOCK ENTERPRISE ORDER SERVICE: /api/enterprise/orders/*
+    if (pathname.startsWith('/api/enterprise/orders')) {
+      const orderIdMatch = pathname.match(/\/api\/enterprise\/orders\/([A-Za-z0-9_-]+)/)
+      const orderId = orderIdMatch ? orderIdMatch[1] : (reqUrl.searchParams.get('orderId') || '72143')
+      const orderData = await trackOrderAcrossPlatforms(orderId)
+      return sendJson(res, 200, {
+        success: true,
+        service: 'MOCK_ORDER_SERVICE_REST_V2',
+        orderId,
+        order: orderData,
+        financialStatus: 'PAID',
+        currency: orderData.currency || 'INR',
+        amount: orderData.amount || 2899,
+        placedAt: orderData.placedAt || new Date(Date.now() - 4 * 86400000).toISOString(),
+        items: orderData.items || []
+      })
+    }
+
+    // 13. MOCK ENTERPRISE LOGISTICS & TRACKING SERVICE: /api/enterprise/tracking/*
+    if (pathname.startsWith('/api/enterprise/tracking')) {
+      const orderIdMatch = pathname.match(/\/api\/enterprise\/tracking\/([A-Za-z0-9_-]+)/)
+      const orderId = orderIdMatch ? orderIdMatch[1] : (reqUrl.searchParams.get('orderId') || '72143')
+      const trackData = await trackOrderAcrossPlatforms(orderId)
+      return sendJson(res, 200, {
+        success: true,
+        service: 'MOCK_LOGISTICS_CARRIER_REST_V2',
+        orderId,
+        carrier: trackData.carrier,
+        trackingNumber: trackData.trackingNumber,
+        status: trackData.status,
+        lastLocation: trackData.lastLocation,
+        delayDays: trackData.delayDays,
+        isSlaBreached: trackData.isSlaBreached,
+        checkpoints: trackData.checkpoints || []
+      })
+    }
+
+    // 14. MOCK ENTERPRISE PAYMENT & NPCI REFUND SERVICE: /api/enterprise/payments/refund
+    if (pathname === '/api/enterprise/payments/refund' && req.method === 'POST') {
+      const data = await readBody(req)
+      const orderId = data.orderId || '72143'
+      const orderData = await trackOrderAcrossPlatforms(orderId)
+      const amount = data.amount || orderData.amount || 2899
+      const result = await processRefundTransaction({
+        orderId,
+        amount,
+        currency: 'INR',
+        reason: data.reason || 'SLA delay exception approved under Policy POL-REFUND-3.2'
+      })
+      return sendJson(res, 200, {
+        success: true,
+        service: 'MOCK_PAYMENT_GATEWAY_NPCI_V2',
+        ...result
+      })
+    }
+
+    // 15. MOCK ENTERPRISE CRM CUSTOMER SERVICE: /api/enterprise/crm/customers/*
+    if (pathname.startsWith('/api/enterprise/crm/customers')) {
+      const custMatch = pathname.match(/\/api\/enterprise\/crm\/customers\/([A-Za-z0-9_-]+)/)
+      const customerId = custMatch ? custMatch[1] : 'CUS-1042'
+      const customer = customerDatabase[customerId] || customerDatabase['CUS-1042']
+      return sendJson(res, 200, {
+        success: true,
+        service: 'MOCK_CRM_REST_V2',
+        customer
+      })
+    }
+
+    // 16. MOCK ENTERPRISE CRM TICKET SERVICE: /api/enterprise/crm/tickets
+    if (pathname === '/api/enterprise/crm/tickets' && req.method === 'POST') {
+      const data = await readBody(req)
+      const ticketId = `TCK-${Math.floor(Math.random() * 90000 + 10000)}`
+      return sendJson(res, 201, {
+        success: true,
+        service: 'MOCK_CRM_TICKET_REST_V2',
+        ticketId,
+        caseId: data.caseId || 'RLY-72143',
+        orderId: data.orderId || '72143',
+        status: 'OPEN',
+        priority: data.priority || 'HIGH',
+        summary: data.summary || 'Delayed delivery SLA exception',
+        assignedDesk: 'LOGISTICS_EXCEPTIONS',
+        createdAt: new Date().toISOString()
       })
     }
 

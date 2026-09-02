@@ -1,6 +1,6 @@
 import React from 'react'
 import { Button } from '../components/ui/Button'
-import { Plus, ArrowRight, Radio, ShieldCheck, FolderKanban } from 'lucide-react'
+import { ArrowRight, Radio, ShieldCheck, FolderKanban } from 'lucide-react'
 
 interface LandingPortalViewProps {
   onStartLiveSession: () => void
@@ -25,17 +25,20 @@ export const LandingPortalView: React.FC<LandingPortalViewProps> = ({
           </p>
         </div>
 
-        {/* DOMINANT ACTION: + NEW LIVE CASE */}
-        <div>
+        {/* DOMINANT HERO ACTION: START LIVE CALL */}
+        <div className="space-y-2">
           <Button
             variant="primary"
             size="md"
             onClick={onStartLiveSession}
-            className="w-full font-mono text-xs font-bold uppercase tracking-wider h-11 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] justify-center flex items-center gap-2 shadow-sm cursor-pointer"
+            className="w-full font-mono text-xs font-bold uppercase tracking-wider h-12 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white justify-center flex items-center gap-2 shadow-md cursor-pointer animate-pulse"
           >
-            <Plus className="w-4 h-4 stroke-[2.5]" />
-            <span>+ NEW LIVE CASE</span>
+            <Radio className="w-4 h-4 stroke-[2.5]" />
+            <span>🎙 START LIVE CALL</span>
           </Button>
+          <p className="text-[10px] text-ink-muted text-center font-sans">
+            Direct Agora WebRTC duplex stream. Speak naturally in Hindi, English, or Hinglish.
+          </p>
         </div>
 
         {/* METRICS SUMMARY */}

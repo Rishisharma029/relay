@@ -9,7 +9,7 @@
  */
 
 import { lookupCustomer } from './tools/customer.js'
-import { lookupOrder, getDeliveryStatus } from './tools/orders.js'
+import { lookupOrder, getDeliveryStatus, extractOrderId } from './tools/orders.js'
 import { evaluateRefundPolicy, issueRefund } from './tools/refunds.js'
 import { createTicket } from './tools/tickets.js'
 import { escalateCase } from './tools/escalation.js'
@@ -26,7 +26,7 @@ export const TOOL_REGISTRY = {
       properties: {
         customerId: {
           type: 'string',
-          description: 'The unique customer identifier, e.g. CUST-AARAV-01',
+          description: 'The unique customer identifier, e.g. CUST-1042',
         },
         orderId: {
           type: 'string',
@@ -51,13 +51,14 @@ export const TOOL_REGISTRY = {
       properties: {
         orderId: {
           type: 'string',
-          description: 'The 5-digit order identifier, e.g. 84921',
+          description: 'The 5-digit order identifier, e.g. 72143 or 84921',
         },
       },
       required: ['orderId'],
     },
     validate: (params = {}) => {
-      if (!params.orderId && typeof params !== 'string') {
+      const id = extractOrderId(params)
+      if (!id) {
         return { valid: false, error: 'Missing required parameter: orderId' }
       }
       return { valid: true }
@@ -81,7 +82,8 @@ export const TOOL_REGISTRY = {
       required: ['orderId'],
     },
     validate: (params = {}) => {
-      if (!params.orderId && typeof params !== 'string') {
+      const id = extractOrderId(params)
+      if (!id) {
         return { valid: false, error: 'Missing required parameter: orderId' }
       }
       return { valid: true }
@@ -93,29 +95,29 @@ export const TOOL_REGISTRY = {
     description: 'Create a formal CRM dispute or escalation ticket assigned to the appropriate desk.',
     riskLevel: 'LOW',
     requiresApproval: false,
-    handler: (params) => createTicket(params.caseId, params.summary, params.priority),
+    handler: (params) => createTicket(params?.caseId || 'RLY-72143', params?.summary || 'Customer escalation', params?.priority || 'HIGH'),
     parameters: {
       type: 'object',
       properties: {
         caseId: {
           type: 'string',
-          description: 'The active case identifier, e.g. RLY-1042',
+          description: 'The unique case identifier, e.g. RLY-72143',
         },
         summary: {
           type: 'string',
-          description: 'Concise summary of the dispute or issue',
+          description: 'Concise summary of the dispute or carrier issue',
         },
         priority: {
           type: 'string',
-          enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'],
-          description: 'Ticket severity priority level',
+          enum: ['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+          description: 'Ticket urgency level based on SLA delay',
         },
       },
       required: ['caseId', 'summary'],
     },
     validate: (params = {}) => {
-      if (!params.summary && !params.caseId) {
-        return { valid: false, error: 'Missing required parameters for createTicket' }
+      if (!params || typeof params !== 'object') {
+        return { valid: false, error: 'Parameters must be an object' }
       }
       return { valid: true }
     },
@@ -123,26 +125,27 @@ export const TOOL_REGISTRY = {
 
   evaluateRefundPolicy: {
     name: 'evaluateRefundPolicy',
-    description: 'Evaluate if an order is eligible for refund under current policy rules and whether human operator approval is required.',
-    riskLevel: 'MEDIUM',
+    description: 'Evaluate customer refund eligibility against enterprise SLA policies and compute risk tier.',
+    riskLevel: 'LOW',
     requiresApproval: false,
-    handler: (params) => evaluateRefundPolicy(params.orderId, params.amount),
+    handler: evaluateRefundPolicy,
     parameters: {
       type: 'object',
       properties: {
         orderId: {
           type: 'string',
-          description: 'The 5-digit order identifier',
+          description: 'The order identifier being evaluated for refund eligibility',
         },
         amount: {
           type: 'number',
-          description: 'The refund amount in INR to evaluate',
+          description: 'Optional refund amount requested by customer',
         },
       },
       required: ['orderId'],
     },
     validate: (params = {}) => {
-      if (!params.orderId) {
+      const id = extractOrderId(params)
+      if (!id) {
         return { valid: false, error: 'Missing required parameter: orderId' }
       }
       return { valid: true }
@@ -151,27 +154,32 @@ export const TOOL_REGISTRY = {
 
   issueRefund: {
     name: 'issueRefund',
-    description: 'Issue an atomic instant UPI refund for an order. High financial risk action requiring verified operator approval.',
+    description: 'Execute an electronic refund payout for a qualified SLA breach.',
     riskLevel: 'HIGH',
     requiresApproval: true,
-    handler: (params) => issueRefund(params.orderId, params.amount),
+    handler: issueRefund,
     parameters: {
       type: 'object',
       properties: {
         orderId: {
           type: 'string',
-          description: 'The 5-digit order identifier',
+          description: 'The order identifier to be refunded',
         },
         amount: {
           type: 'number',
-          description: 'The refund amount in INR',
+          description: 'The exact amount in INR to refund, bounded by policy',
+        },
+        reason: {
+          type: 'string',
+          description: 'Audit explanation justifying the refund under policy',
         },
       },
-      required: ['orderId', 'amount'],
+      required: ['orderId'],
     },
     validate: (params = {}) => {
-      if (!params.orderId || !params.amount) {
-        return { valid: false, error: 'Missing required parameters: orderId and amount' }
+      const id = extractOrderId(params)
+      if (!id) {
+        return { valid: false, error: 'Missing required parameter: orderId' }
       }
       return { valid: true }
     },
@@ -179,27 +187,24 @@ export const TOOL_REGISTRY = {
 
   escalateCase: {
     name: 'escalateCase',
-    description: 'Escalate the active case and dispatch to human supervisor workstation with full context snapshot.',
-    riskLevel: 'MEDIUM',
+    description: 'Trigger immediate human operator duplex takeover when tool execution fails or user requests human.',
+    riskLevel: 'LOW',
     requiresApproval: false,
-    handler: (params) => escalateCase(params.caseId, params.reason, params.targetDesk),
+    handler: (params) => escalateCase(params?.reason || 'Operator takeover requested', params?.priority || 'URGENT'),
     parameters: {
       type: 'object',
       properties: {
-        caseId: {
-          type: 'string',
-          description: 'The active case identifier, e.g. RLY-1042',
-        },
         reason: {
           type: 'string',
-          description: 'Reason for human operator escalation',
+          description: 'The technical or customer rationale for human handoff',
         },
-        targetDesk: {
+        priority: {
           type: 'string',
-          description: 'Target supervisor queue or desk',
+          enum: ['STANDARD', 'URGENT', 'CRITICAL'],
+          description: 'Handoff queue priority level',
         },
       },
-      required: ['caseId'],
+      required: ['reason'],
     },
     validate: (params = {}) => {
       return { valid: true }
@@ -207,9 +212,14 @@ export const TOOL_REGISTRY = {
   },
 }
 
-/**
- * Returns list of approved tool definitions formatted for LLM Function Calling.
- */
+export function isToolApproved(toolName) {
+  return Boolean(TOOL_REGISTRY[toolName])
+}
+
+export function getToolDescriptor(toolName) {
+  return TOOL_REGISTRY[toolName] || null
+}
+
 export function getApprovedToolDefinitions() {
   return Object.values(TOOL_REGISTRY).map((tool) => ({
     type: 'function',
@@ -219,18 +229,4 @@ export function getApprovedToolDefinitions() {
       parameters: tool.parameters,
     },
   }))
-}
-
-/**
- * Check if a tool name is approved in the registry.
- */
-export function isToolApproved(toolName) {
-  return Boolean(TOOL_REGISTRY[toolName])
-}
-
-/**
- * Get metadata and schema for an approved tool.
- */
-export function getToolDescriptor(toolName) {
-  return TOOL_REGISTRY[toolName] || null
 }

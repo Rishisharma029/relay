@@ -57,29 +57,29 @@ export const CaseStateProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [events, setEvents] = useState<RelayEvent[]>([
     {
       type: 'call.started',
-      caseId: 'RLY-1042',
-      timestamp: '21:33:40',
+      caseId: 'RLY-72143',
+      timestamp: '21:34:02',
     },
     {
       type: 'speech.transcript',
       speaker: 'customer',
-      text: 'Mera order 5 din se nahi aaya.',
+      text: 'Mera order 72143 4 din se nahi aaya, mujhe refund chahiye.',
       language: 'Hindi',
-      translation: "My order hasn't arrived for 5 days.",
-      timestamp: '21:33:42',
+      translation: "My order 72143 hasn't arrived for 4 days, I want a refund.",
+      timestamp: '21:34:04',
     },
     {
       type: 'tool.started',
       tool: 'lookupOrder',
-      params: { orderId: '84921' },
-      timestamp: '21:33:44',
+      params: { orderId: '72143' },
+      timestamp: '21:34:06',
     },
     {
       type: 'tool.completed',
       tool: 'lookupOrder',
-      durationMs: 184,
-      result: { orderId: '84921', status: 'DELIVERY_EXCEPTION', daysDelayed: 3 },
-      timestamp: '21:33:45',
+      durationMs: 142,
+      result: { orderId: '72143', status: 'DELIVERY_EXCEPTION', daysDelayed: 4, amount: 2899, carrier: 'Delhivery Express' },
+      timestamp: '21:34:07',
     },
   ])
 

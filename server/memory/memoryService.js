@@ -49,18 +49,18 @@ export const customerMemoryStore = new Map([
 
 export const caseMemoryStore = new Map([
   [
-    'RLY-1042',
+    'RLY-72143',
     {
-      caseId: 'RLY-1042',
+      caseId: 'RLY-72143',
       customerId: 'CUS-1042',
-      orderId: '84921',
-      orderAmount: 1499,
+      orderId: '72143',
+      orderAmount: 2899,
       deliveryStatus: 'delivery_exception',
-      delayDays: 3,
-      carrier: 'BlueDart Air',
-      carrierTracking: 'BD-948192841',
+      delayDays: 4,
+      carrier: 'Delhivery Express',
+      carrierTracking: 'DL-721438910',
       facts: [
-        'Order #84921 delayed past SLA by 3 days',
+        'Order #72143 delayed past SLA by 4 days',
         'Customer requested instant UPI refund',
         'Carrier confirmed delivery exception',
       ],
@@ -118,7 +118,7 @@ export class MemoryService {
       utterance: currentUtterance,
       detectedLanguage: currentUtterance.includes('Mera') || currentUtterance.includes('chahiye') ? 'hi-IN' : 'en-IN',
       slotExtractions: {
-        orderId: currentUtterance.match(/#?(\d{5})/)?.[1] || caseMemory.orderId || '84921',
+        orderId: currentUtterance.match(/(?:order|#)?\s*(\d{4,8})/i)?.[1] || caseMemory.orderId || '72143',
         isRefundRequested: currentUtterance.toLowerCase().includes('refund') || currentUtterance.includes('chahiye'),
         isDeliveryInquiry: currentUtterance.toLowerCase().includes('order') || currentUtterance.includes('aaya'),
       },

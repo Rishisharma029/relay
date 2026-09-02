@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Layers, Search, ArrowUpRight, ShieldAlert, Wrench, FolderPlus } from 'lucide-react'
 import { useCaseState } from '../../contexts/CaseStateContext'
+import { useDevMode } from '../../contexts/DevModeContext'
 
 export interface NotificationItem {
   id: string
@@ -38,6 +39,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   onOpenNewCase,
 }) => {
   const { runtimeMode, toggleRuntimeMode } = useCaseState()
+  const { isDevMode, toggleDevMode } = useDevMode()
   const [timeString, setTimeString] = useState<string>('')
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
   const [notifications, setNotifications] = useState<NotificationItem[]>([
@@ -71,6 +73,8 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   ])
 
   const notifRef = useRef<HTMLDivElement | null>(null)
+  const transparencyRef = useRef<HTMLDivElement | null>(null)
+  const [showTransparencyPopover, setShowTransparencyPopover] = useState<boolean>(false)
 
   useEffect(() => {
     const updateTime = () => {
@@ -85,18 +89,21 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
     return () => clearInterval(timer)
   }, [])
 
-  // Close notifications on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
         setShowNotifications(false)
       }
+      if (transparencyRef.current && !transparencyRef.current.contains(e.target as Node)) {
+        setShowTransparencyPopover(false)
+      }
     }
-    if (showNotifications) {
+    if (showNotifications || showTransparencyPopover) {
       window.addEventListener('mousedown', handleClickOutside)
     }
     return () => window.removeEventListener('mousedown', handleClickOutside)
-  }, [showNotifications])
+  }, [showNotifications, showTransparencyPopover])
 
   const unreadCount = notifications.filter((n) => n.unread).length
 
@@ -197,10 +204,10 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               ? 'bg-ops-liveBg text-ops-live border-ops-liveBorder'
               : 'bg-accent-subtle text-accent border-accent-border'
           }`}
-          title="Click to toggle between REAL CALL (Live WebRTC/SSE) and DEMO MODE (Deterministic State Simulator)"
+          title="Toggle between LIVE CALL (WebRTC) and DEMO SIMULATION"
         >
           <span className={`w-1.5 h-1.5 rounded-full ${runtimeMode === 'REAL' ? 'bg-ops-live animate-pulse' : 'bg-accent'}`} />
-          <span>{runtimeMode === 'REAL' ? 'REAL CALL · LIVE' : 'DEMO MODE · DETERMINISTIC'}</span>
+          <span>{runtimeMode === 'REAL' ? 'LIVE' : 'DEMO'}</span>
         </button>
 
         {/* SECTION 41: DEMO SCENARIOS TRIGGER */}
@@ -209,11 +216,108 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             type="button"
             onClick={onOpenDemoMode}
             className="flex items-center gap-1 bg-canvas-subtle hover:bg-canvas-muted border border-border-subtle rounded-[3px] px-2 py-0.5 text-xs text-ink-secondary hover:text-ink-primary font-mono font-bold transition-colors cursor-pointer"
-            title="Demo Mode Scenarios Control (Alt+D)"
+            title="Demo Scenarios (Alt+D)"
           >
             <span>⚡ SCENARIOS</span>
           </button>
         )}
+
+        {/* SYSTEM STATUS TRANSPARENCY BADGE */}
+        <div className="relative" ref={transparencyRef}>
+          <button
+            type="button"
+            onClick={() => setShowTransparencyPopover(!showTransparencyPopover)}
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded-[3px] font-mono text-[10px] font-bold border transition-colors cursor-pointer bg-canvas-subtle text-ink-primary hover:bg-canvas-muted border-border-subtle hover:border-border-strong"
+            title="System Architecture Status (Live vs Sandbox)"
+          >
+            <span className="w-2 h-2 rounded-full bg-ops-live animate-pulse" />
+            <span className="font-bold">SYSTEM STATUS</span>
+          </button>
+
+          {showTransparencyPopover && (
+            <div className="absolute right-0 top-7 w-80 bg-canvas-pure border border-border-subtle rounded-[6px] shadow-2xl z-50 overflow-hidden font-sans p-3 space-y-2.5 animate-in fade-in duration-100">
+              <div className="flex items-center justify-between pb-1.5 border-b border-border-subtle">
+                <span className="font-mono text-xs font-bold text-ink-primary uppercase tracking-tight">
+                  SYSTEM ARCHITECTURE STATUS
+                </span>
+                <span className="font-mono text-[9px] font-bold bg-ops-liveBg text-ops-live px-1.5 py-0.2 rounded border border-ops-liveBorder">
+                  HONEST STATUS
+                </span>
+              </div>
+
+              <div className="space-y-1.5 font-mono text-[11px]">
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">VOICE</span>
+                  <span className="text-ops-live font-bold bg-ops-liveBg px-1.5 py-0.5 rounded border border-ops-liveBorder text-[10px]">● LIVE</span>
+                </div>
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">AI REASONING</span>
+                  <span className="text-ops-live font-bold bg-ops-liveBg px-1.5 py-0.5 rounded border border-ops-liveBorder text-[10px]">● LIVE</span>
+                </div>
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">ORDER API</span>
+                  <span className="text-amber-500 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 text-[10px]">◉ SANDBOX</span>
+                </div>
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">LOGISTICS API</span>
+                  <span className="text-amber-500 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 text-[10px]">◉ SANDBOX</span>
+                </div>
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">PAYMENT API</span>
+                  <span className="text-amber-500 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 text-[10px]">◉ SANDBOX</span>
+                </div>
+                <div className="flex items-center justify-between py-1 px-2 bg-canvas-subtle rounded border border-border-subtle">
+                  <span className="text-ink-primary font-bold">DATABASE</span>
+                  <span className="text-accent font-bold bg-accent-subtle px-1.5 py-0.5 rounded border border-accent-border text-[10px]">POSTGRES</span>
+                </div>
+              </div>
+
+              {/* AI SAFETY & GOVERNANCE BOUNDARY */}
+              <div className="pt-2 border-t border-border-subtle space-y-1.5 font-mono text-[10px]">
+                <span className="font-bold text-ink-primary uppercase tracking-wider block">
+                  AI SAFETY & GOVERNANCE BOUNDARY
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <div className="p-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded space-y-0.5">
+                    <span className="font-bold text-emerald-600 block pb-0.5 border-b border-emerald-500/20">AI CAN:</span>
+                    <div className="text-ink-primary">• listen</div>
+                    <div className="text-ink-primary">• understand</div>
+                    <div className="text-ink-primary">• retrieve</div>
+                    <div className="text-ink-primary">• recommend</div>
+                    <div className="text-ink-primary">• create low-risk actions</div>
+                    <div className="text-ink-primary">• prepare approvals</div>
+                  </div>
+                  <div className="p-1.5 bg-rose-500/10 border border-rose-500/20 rounded space-y-0.5">
+                    <span className="font-bold text-rose-600 block pb-0.5 border-b border-rose-500/20">AI CANNOT:</span>
+                    <div className="text-ink-primary">• bypass policy</div>
+                    <div className="text-ink-primary">• access arbitrary tools</div>
+                    <div className="text-ink-primary">• execute financial actions</div>
+                    <div className="text-ink-primary">• override human approval</div>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-ink-muted leading-tight border-t border-border-subtle pt-1.5 italic">
+                *Voice audio, Gemini operational reasoning, and the PostgreSQL event store execute live. Enterprise order, logistics, and payment services connect via mock sandbox REST endpoints.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* DEVELOPER MODE TOGGLE */}
+        <button
+          type="button"
+          onClick={toggleDevMode}
+          className={`font-mono text-[10px] uppercase px-2 py-0.5 rounded-[3px] font-bold tracking-wider border transition-colors cursor-pointer flex items-center gap-1 ${
+            isDevMode
+              ? 'bg-accent text-white border-accent shadow-xs'
+              : 'bg-canvas-subtle text-ink-muted border-border-subtle hover:text-ink-primary'
+          }`}
+          title="Toggle Developer Diagnostics Mode (Telemetry, Audio Metrics, Tool Calls)"
+        >
+          <Wrench className="w-3 h-3" />
+          <span>DEV MODE: {isDevMode ? 'ON' : 'OFF'}</span>
+        </button>
 
         {/* Global Search Trigger Bar */}
         {onOpenSearch && (
@@ -224,7 +328,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             title="Global Search (⌘K / Ctrl+K)"
           >
             <Search className="w-3 h-3 text-ink-muted" />
-            <span className="font-sans text-[11px] hidden md:inline">Search cases, customers, calls...</span>
+            <span className="font-sans text-[11px] hidden md:inline">Search</span>
             <span className="font-mono text-[9px] bg-canvas-pure border border-border-subtle rounded px-1 text-ink-muted font-semibold">
               ⌘K
             </span>

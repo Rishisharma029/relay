@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { AppHeader } from './components/layout/AppHeader'
 import { NavigationSidebar, NavTabId } from './components/layout/NavigationSidebar'
+import { CaseContextPanel } from './components/workspace/CaseContextPanel'
 import { LiveConversationPane } from './components/workspace/LiveConversationPane'
 import { CaseIntelligencePane } from './components/workspace/CaseIntelligencePane'
 import { EvidenceDrawer } from './components/workspace/EvidenceDrawer'
@@ -34,6 +35,7 @@ export const App: React.FC = () => {
   const [selectedCaseId, setSelectedCaseId] = useState<string>('RLY-1042')
   const [viewMode, setViewMode] = useState<ViewMode>('live-workstation')
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(true)
+  const [isCaseContextCollapsed, setIsCaseContextCollapsed] = useState<boolean>(false)
   const [isHumanTakeover, setIsHumanTakeover] = useState<boolean>(false)
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false)
   const [isDemoModalOpen, setIsDemoModalOpen] = useState<boolean>(false)
@@ -165,6 +167,7 @@ export const App: React.FC = () => {
         <NavigationSidebar
           currentTab={currentTab}
           onSelectTab={handleSelectTab}
+          isCompact={viewMode === 'live-workstation'}
         />
 
         {/* Dynamic Views */}
@@ -224,8 +227,15 @@ export const App: React.FC = () => {
         )}
 
         {viewMode === 'live-workstation' && (
-          <>
-            {/* CENTER ZONE: What is happening now (Live Conversation, Waveform, Transcript & Takeover) */}
+          <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
+            {/* 1. LEFT PANEL: Compact Case & Customer Context */}
+            <CaseContextPanel
+              isCollapsed={isCaseContextCollapsed}
+              onToggleCollapse={() => setIsCaseContextCollapsed(!isCaseContextCollapsed)}
+              onOpenCaseDetail={handleOpenCaseDetail}
+            />
+
+            {/* 2. CENTER PANEL: Live AI Conversation (Dominant Focus) */}
             <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden bg-canvas">
               <LiveConversationPane
                 isHumanTakeover={isHumanTakeover}
@@ -234,11 +244,12 @@ export const App: React.FC = () => {
               />
             </main>
 
-            {/* RIGHT ZONE: Case Intelligence (Agora Status / CASE STATE / KNOWN FACTS / ACTION / FAILURE UX) */}
+            {/* 3. RIGHT PANEL: AI Intelligence, Facts & Action Approvals */}
             <CaseIntelligencePane
-              onTakeover={() => setIsHumanTakeover(true)}
+              isHumanTakeover={isHumanTakeover}
+              onToggleTakeover={handleToggleTakeover}
             />
-          </>
+          </div>
         )}
       </div>
 

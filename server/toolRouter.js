@@ -4,7 +4,7 @@
  * Single controlled entry point for all tool executions across RELAY.
  *
  * Architecture:
- *   AI / LLM Turn
+ *   AI / LLM / Agora Turn
  *        │
  *        ▼
  *   toolRouter.execute(toolName, params, context)
@@ -22,18 +22,98 @@ import { TOOL_TIMEOUT_MS } from './config.js'
 import { withRetry, FAILURE_STATES } from './failureEngine.js'
 import { db } from './db/database.js'
 
+/**
+ * Normalizes any incoming HTTP payload format into an unambiguous { tool, params } pair.
+ * Safely supports:
+ *   1. Wrapped: { "tool": "lookupOrder", "params": { "orderId": "72143" } }
+ *   2. Parameters alias: { "tool": "lookupOrder", "parameters": { "orderId": "72143" } }
+ *   3. Flattened orderId: { "orderId": "72143" } -> tool: "lookupOrder", params: { orderId: "72143" }
+ *   4. Flattened parameters: { "parameters": { "orderId": "72143" } } -> tool: "lookupOrder", params: { orderId: "72143" }
+ *   5. Flattened customerId: { "customerId": "CUST-1042" } -> tool: "lookupCustomer", params: { customerId: "CUST-1042" }
+ */
+export function normalizeToolPayload(body = {}) {
+  if (!body || typeof body !== 'object') {
+    return {
+      valid: false,
+      error: 'Invalid request payload: body must be a JSON object',
+    }
+  }
+
+  // A. Explicit tool name provided
+  if (body.tool || body.toolName || body.function || body.name) {
+    const rawTool = body.tool || body.toolName || body.function || body.name
+    const rawParams = body.params || body.parameters || body.args || body.arguments || {}
+
+    let parsedParams = rawParams
+    if (typeof rawParams === 'string') {
+      try {
+        parsedParams = JSON.parse(rawParams)
+      } catch (e) {
+        parsedParams = { orderId: rawParams }
+      }
+    }
+
+    let normalizedTool = String(rawTool).trim()
+    if (normalizedTool === 'getOrderStatus') normalizedTool = 'lookupOrder'
+    if (normalizedTool === 'refundOrder') normalizedTool = 'issueRefund'
+
+    return {
+      valid: true,
+      tool: normalizedTool,
+      params: typeof parsedParams === 'object' && parsedParams !== null ? parsedParams : { orderId: String(parsedParams) },
+    }
+  }
+
+  // B. Parameters object without explicit tool name
+  if (body.params && typeof body.params === 'object') {
+    return normalizeToolPayload(body.params)
+  }
+  if (body.parameters && typeof body.parameters === 'object') {
+    return normalizeToolPayload(body.parameters)
+  }
+
+  // C. Unambiguous flattened payloads
+  if (body.orderId || body.order_id || body.orderNumber || body.id) {
+    const orderId = String(body.orderId || body.order_id || body.orderNumber || body.id).trim()
+    return {
+      valid: true,
+      tool: 'lookupOrder',
+      params: { orderId },
+    }
+  }
+
+  if (body.customerId || body.customer_id) {
+    const customerId = String(body.customerId || body.customer_id).trim()
+    return {
+      valid: true,
+      tool: 'lookupCustomer',
+      params: { customerId },
+    }
+  }
+
+  if (body.awb || body.trackingNumber || body.tracking_number) {
+    const trackingNumber = String(body.awb || body.trackingNumber || body.tracking_number).trim()
+    return {
+      valid: true,
+      tool: 'getDeliveryStatus',
+      params: { orderId: trackingNumber },
+    }
+  }
+
+  // D. Empty or unrecognized
+  return {
+    valid: false,
+    error: 'Could not determine tool from payload. Provide { "tool": "lookupOrder", "params": { ... } } or unambiguous parameters.',
+  }
+}
+
 export class ToolRouter {
   /**
    * Execute an approved tool through the single controlled router entry point.
-   *
-   * @param {string} toolName - Name of the approved tool requested
-   * @param {object} params - Input parameters matching the registry schema
-   * @param {object} context - Execution context { caseId, customerId, operatorId, approvalToken }
-   * @returns {Promise<object>} Structured execution result or deterministic failure object
    */
   static async execute(toolName, params = {}, context = {}) {
     const startTime = Date.now()
-    const caseId = context.caseId || 'RLY-1042'
+    const caseId = context.caseId || 'RLY-72143'
 
     // ── 1. Gating: Is the tool approved in the registry? ─────────────────
     if (!isToolApproved(toolName)) {
@@ -76,7 +156,6 @@ export class ToolRouter {
 
     // ── 3. Policy & Approval Gate Enforcement ────────────────────────────
     if (descriptor.requiresApproval && !context.isOperatorApproved) {
-      // High-risk financial tool called without active operator approval
       console.log(`[ToolRouter] Gate 1 Policy Trigger: '${toolName}' requires human operator approval.`)
 
       return {

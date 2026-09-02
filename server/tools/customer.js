@@ -43,14 +43,35 @@ function normalizeCustomerId(id) {
 }
 
 export async function lookupCustomer(customerId = 'CUS-1042') {
+  const normalized = normalizeCustomerId(customerId)
+
+  try {
+    const res = await fetch(`http://localhost:3000/api/enterprise/crm/customers/${normalized}`, {
+      headers: { 'Accept': 'application/json', 'X-Relay-Client': 'ToolRouter/v2' }
+    })
+    if (res.ok) {
+      const data = await res.json()
+      if (data.customer) {
+        return {
+          success: true,
+          endpoint: `GET /api/enterprise/crm/customers/${normalized}`,
+          service: 'MOCK_CRM_REST_V2',
+          ...data.customer
+        }
+      }
+    }
+  } catch (netErr) {
+    // Internal direct fallback
+  }
+
   // Simulate database RPC latency
   await new Promise((res) => setTimeout(res, 45))
-
-  const normalized = normalizeCustomerId(customerId)
   const customer = customerDatabase[normalized] || customerDatabase['CUS-1042']
 
   return {
     success: true,
+    endpoint: `GET /api/enterprise/crm/customers/${normalized}`,
+    service: 'MOCK_CRM_REST_V2',
     customerId: customer.customerId,
     name: customer.name,
     phone: customer.phone,
@@ -58,7 +79,8 @@ export async function lookupCustomer(customerId = 'CUS-1042') {
     preferredLanguage: customer.preferredLanguage,
     totalOrders: customer.totalOrders,
     disputeRate: customer.disputeRate,
+    sentimentTrend: customer.sentimentTrend,
+    accountCreated: customer.accountCreated,
     verified: customer.verified,
-    activeCaseId: customer.activeCaseId,
   }
 }

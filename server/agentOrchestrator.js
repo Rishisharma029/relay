@@ -1,4 +1,4 @@
-﻿/**
+/**
  * RELAY — Autonomous AI Agent Reasoning & Function Calling (Tool Calling) Engine
  * Multi-Turn Conversational Reasoning, Gemini 3.5/2.5 Intelligence, Tool Calling, Policy Grounding & Gender-Aware Synthesis
  */
@@ -12,6 +12,7 @@ import { db } from './db/database.js'
 import { MemoryService } from './memory/memoryService.js'
 import { KnowledgeService } from './knowledge/knowledgeService.js'
 import { GeminiService } from './geminiService.js'
+import { trackOrderAcrossPlatforms } from './services/logisticsAggregator.js'
 import {
   FAILURE_STATES,
   buildFailureEvent,
@@ -122,7 +123,13 @@ export async function processAgentTurn(
   let geminiAgentResponse = null
   let geminiAgentTranslation = null
 
-  const matchedOrderId = customerUtterance.match(/#?(\d{5})/)?.[1] || '84921'
+  const orderMatch = customerUtterance.match(/(?:order|package|awb|id|number)?\s*#?(\d{4,8})/i)
+  const matchedOrderId = orderMatch ? orderMatch[1] : (memoryContext?.orderId || (caseId ? caseId.replace(/[^0-9]/g, '') : null) || '72143')
+  const orderRecord = await trackOrderAcrossPlatforms(matchedOrderId)
+  const orderAmount = orderRecord.amount || 2899
+  const orderCarrier = orderRecord.carrier || 'Delhivery Express'
+  const orderDelay = orderRecord.delayDays || (orderRecord.isSlaBreached ? 4 : 0)
+  const orderItemName = orderRecord.items?.[0]?.name || 'Merchandise'
 
   try {
     const geminiResult = await Promise.race([
@@ -248,11 +255,11 @@ export async function processAgentTurn(
       detectedIntent = 'escalation_requested'
     } else if (isPaymentMethod && !isDelivery) {
       detectedIntent = 'refund_payment_method'
-      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: orderAmount } })
     } else if (isRefund) {
       detectedIntent = 'refund_request'
       toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
-      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: 1499 } })
+      toolsToCall.push({ tool: 'evaluateRefundPolicy', params: { orderId: matchedOrderId, amount: orderAmount } })
     } else if (isCancel) {
       detectedIntent = 'order_cancellation'
       toolsToCall.push({ tool: 'lookupOrder', params: { orderId: matchedOrderId } })
@@ -329,6 +336,7 @@ export async function processAgentTurn(
           toolsCalled: [call.tool],
           agentResponse: escalationText,
           events,
+          orderData: orderRecord,
           escalateToHuman: true,
           totalLatencyMs: Date.now() - turnStartTime,
           recovery: getRecoveryPlan(toolExec.failureState),
@@ -354,13 +362,13 @@ export async function processAgentTurn(
       const approval = await createApprovalRequest({
         caseId,
         orderId: call.params.orderId,
-        amount: call.params.amount,
+        amount: orderAmount,
       })
 
       events.push({
         type: 'approval.created',
         actionId: approval.approval.id,
-        amount: 1499,
+        amount: orderAmount,
         riskTier: 'MEDIUM',
         timestamp: new Date().toLocaleTimeString(),
       })
@@ -379,15 +387,15 @@ export async function processAgentTurn(
           break
 
         case 'delivery_issue':
-          agentResponseText = `${customerName}, I am checking order #${matchedOrderId}. It has a delivery exception with BlueDart Air and is delayed by 3 days. Would you like me to expedite the shipment, or would you prefer an instant refund of ₹1,499?`
+          agentResponseText = `${customerName}, I am checking order #${matchedOrderId} (${orderItemName}). It has a delivery exception with ${orderCarrier} and is delayed by ${orderDelay} days. Would you like me to expedite the shipment, or would you prefer an instant refund of ₹${orderAmount}?`
           break
 
         case 'refund_request':
-          agentResponseText = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund due to the delivery SLA delay. I have initiated the approval request. Would you like the refund dispatched via instant UPI or to your original payment method?`
+          agentResponseText = `Under Refund Policy v3.2, order #${matchedOrderId} is eligible for an instant ₹${orderAmount} refund due to the delivery delay. I have initiated the approval request. Would you like the refund dispatched via instant UPI or to your original payment method?`
           break
 
         case 'refund_payment_method':
-          agentResponseText = `Understood ${customerName}, your ₹1,499 refund is queued for instant UPI settlement. Funds will credit within 120 seconds upon supervisor approval. Should I send you an SMS confirmation?`
+          agentResponseText = `Understood ${customerName}, your ₹${orderAmount} refund for order #${matchedOrderId} is queued for instant UPI settlement. Funds will credit within 120 seconds upon supervisor approval. Should I send you an SMS confirmation?`
           break
 
         case 'order_cancellation':
@@ -395,7 +403,7 @@ export async function processAgentTurn(
           break
 
         case 'address_change':
-          agentResponseText = `We can update your delivery address while the shipment is at the transit hub. Please provide your new PIN code and delivery address.`
+          agentResponseText = `We can update your delivery address for order #${matchedOrderId} while the shipment is at the transit hub. Please provide your new PIN code and delivery address.`
           break
 
         case 'payment_failure_issue':
@@ -434,23 +442,23 @@ export async function processAgentTurn(
 
         case 'delivery_issue':
           agentResponseText = isMale
-            ? `${customerName} ji, main aapka order #${matchedOrderId} check kar raha hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
-            : `${customerName} ji, main aapka order #${matchedOrderId} check kar rahi hoon. Isme BlueDart Air ke sath weather delay exception hai aur yeh 3 din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹1,499 ka instant refund initiate karwana chahenge?`
-          agentTranslation = `${customerName}, I am checking order #${matchedOrderId}... there is a delivery delay exception with BlueDart Air. Would you like me to expedite the shipment or initiate an instant ₹1,499 refund?`
+            ? `${customerName} ji, main aapka order #${matchedOrderId} check kar raha hoon. Isme ${orderCarrier} ke sath delay exception hai aur yeh ${orderDelay} din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹${orderAmount} ka instant refund initiate karwana chahenge?`
+            : `${customerName} ji, main aapka order #${matchedOrderId} check kar rahi hoon. Isme ${orderCarrier} ke sath delay exception hai aur yeh ${orderDelay} din late chal raha hai. Kya aap chahte hain ki main courier ko expedite request bhejoon, ya fir aap ₹${orderAmount} ka instant refund initiate karwana chahenge?`
+          agentTranslation = `${customerName}, I am checking order #${matchedOrderId}... there is a delay exception with ${orderCarrier}. Would you like me to expedite the shipment or initiate an instant ₹${orderAmount} refund?`
           break
 
         case 'refund_request':
           agentResponseText = isMale
-            ? `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
-            : `Refund Policy v3.2 ke tahat aap ₹1,499 instant 100% refund ke liye eligible hain. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
-          agentTranslation = `Under Refund Policy v3.2, you are eligible for an instant ₹1,499 refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
+            ? `Refund Policy v3.2 ke tahat aapka order #${matchedOrderId} ₹${orderAmount} instant 100% refund ke liye eligible hai. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
+            : `Refund Policy v3.2 ke tahat aapka order #${matchedOrderId} ₹${orderAmount} instant 100% refund ke liye eligible hai. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
+          agentTranslation = `Under Refund Policy v3.2, your order #${matchedOrderId} is eligible for an instant ₹${orderAmount} refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
           break
 
         case 'refund_payment_method':
           agentResponseText = isMale
-            ? `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayega. Kya main aapko iska SMS confirmation bhej doon?`
-            : `Theek hai ${customerName} ji, aapka ₹1,499 refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayegi. Kya main aapko iska SMS confirmation bhej doon?`
-          agentTranslation = `Understood ${customerName}, your ₹1,499 refund is queued for UPI settlement within 120 seconds of approval. Should I send an SMS confirmation?`
+            ? `Theek hai ${customerName} ji, aapka ₹${orderAmount} refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayega. Kya main aapko iska SMS confirmation bhej doon?`
+            : `Theek hai ${customerName} ji, aapka ₹${orderAmount} refund UPI VPA par schedule kar diya gaya hai. Supervisor approval milte hi 120 seconds mein credit ho jayegi. Kya main aapko iska SMS confirmation bhej doon?`
+          agentTranslation = `Understood ${customerName}, your ₹${orderAmount} refund is queued for UPI settlement within 120 seconds of approval. Should I send an SMS confirmation?`
           break
 
         case 'order_cancellation':
@@ -462,9 +470,9 @@ export async function processAgentTurn(
 
         case 'address_change':
           agentResponseText = isMale
-            ? `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
-            : `${customerName} ji, transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
-          agentTranslation = `${customerName}, we can update your delivery address while the shipment is at the hub. Please provide your new PIN code and address.`
+            ? `${customerName} ji, order #${matchedOrderId} ke liye transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+            : `${customerName} ji, order #${matchedOrderId} ke liye transit hub mein parcel hold karke naya delivery address update kiya ja sakta hai. Kripya apna naya PIN code aur address batayein.`
+          agentTranslation = `${customerName}, we can update your delivery address for order #${matchedOrderId} while the shipment is at the hub. Please provide your new PIN code and address.`
           break
 
         case 'payment_failure_issue':
@@ -545,6 +553,7 @@ export async function processAgentTurn(
     agentTranslation,
     policyEvidence,
     events,
+    orderData: orderRecord,
     totalLatencyMs: Date.now() - turnStartTime,
   }
 }

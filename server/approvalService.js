@@ -23,14 +23,14 @@ import { db } from './db/database.js'
 
 export const approvalStore = new Map()
 
-// Seed initial pending approval for Case RLY-1042
-approvalStore.set('appr-1042-99042', {
-  id: 'appr-1042-99042',
-  caseId: 'RLY-1042',
+// Seed initial pending approval for Case RLY-72143
+approvalStore.set('appr-72143-99042', {
+  id: 'appr-72143-99042',
+  caseId: 'RLY-72143',
   customerId: 'CUS-1042',
-  orderId: '84921',
+  orderId: '72143',
   actionType: 'REFUND',
-  amount: 1499,
+  amount: 2899,
   currency: 'INR',
   riskTier: 'medium',
   status: 'PENDING',
@@ -38,9 +38,9 @@ approvalStore.set('appr-1042-99042', {
   section: 'Section 4.1',
   requiredRole: 'OPERATOR',
   justification: [
-    'Delivery exception confirmed with logistics carrier (BlueDart Air)',
+    'Delivery exception confirmed with logistics carrier (Delhivery Express)',
     'Customer explicitly requested instant refund',
-    'Delayed past SLA (+3 days)',
+    'Delayed past SLA (+4 days)',
   ],
   createdAt: new Date().toISOString(),
 })
@@ -68,9 +68,15 @@ function emitApprovalEvent(caseId, type, payload) {
 
 export async function createApprovalRequest(data = {}) {
   const customerId = data.customerId || 'CUS-1042'
-  const orderId = String(data.orderId || '84921').replace(/^#/, '').trim()
-  const amount = Number(data.amount) || 1499
-  const caseId = data.caseId || 'RLY-1042'
+  const orderId = String(data.orderId || '72143').replace(/^#/, '').trim()
+  const caseId = data.caseId || 'RLY-72143'
+  let amount = Number(data.amount) || 2899
+  try {
+    const orderRes = await lookupOrder(orderId)
+    if (orderRes && orderRes.amount) {
+      amount = Number(orderRes.amount)
+    }
+  } catch (e) {}
 
   // Gate 1 Policy Evaluation before proposal
   const policyCheck = await evaluatePolicyGates({ customerId, orderId, amount, caseId })
