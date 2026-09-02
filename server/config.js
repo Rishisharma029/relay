@@ -3,6 +3,31 @@
  * Centralizes secret validation and prevents accidental client leakage.
  */
 
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+
+// Auto-load .env from root if process.env is missing values
+try {
+  const envPath = path.resolve(__dirname, '../.env')
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8')
+    for (const line of envContent.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+        const [key, ...rest] = trimmed.split('=')
+        const val = rest.join('=').replace(/^["']|["']$/g, '').trim()
+        if (key && !process.env[key]) {
+          process.env[key] = val
+        }
+      }
+    }
+  }
+} catch (e) {}
+
 export const serverConfig = {
   // Agora Credentials
   agora: {
@@ -10,7 +35,7 @@ export const serverConfig = {
     appCertificate: process.env.AGORA_APP_CERTIFICATE || '',
     customerId:     process.env.AGORA_CUSTOMER_ID || '',
     customerSecret: process.env.AGORA_CUSTOMER_SECRET || '',
-    pipelineId:     process.env.AGORA_PIPELINE_ID || '',
+    pipelineId:     process.env.AGORA_PIPELINE_ID || 'beec10e4de9a41edbb686f47e677756a',
   },
 
   // AI Service Keys
@@ -59,14 +84,3 @@ export const AUTHORIZED_OPERATORS = new Set([
 export function isAuthorizedOperator(operatorId) {
   return AUTHORIZED_OPERATORS.has(operatorId)
 }
-
-export function validateServerCredentials() {
-  const missing = []
-  if (!serverConfig.agora.appId) missing.push('AGORA_APP_ID')
-  if (!serverConfig.agora.appCertificate) missing.push('AGORA_APP_CERTIFICATE')
-
-  if (missing.length > 0) {
-    console.warn(`[RELAY Server] Optional credentials missing: ${missing.join(', ')} (operating in fallback demo mode)`)
-  }
-}
-
