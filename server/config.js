@@ -10,6 +10,7 @@ export const serverConfig = {
     appCertificate: process.env.AGORA_APP_CERTIFICATE || '',
     customerId:     process.env.AGORA_CUSTOMER_ID || '',
     customerSecret: process.env.AGORA_CUSTOMER_SECRET || '',
+    pipelineId:     process.env.AGORA_PIPELINE_ID || '',
   },
 
   // AI Service Keys
