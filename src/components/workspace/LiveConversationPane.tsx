@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Button } from '../ui/Button'
-import { WaveformMonitor } from './WaveformMonitor'
 import { CallStateSimulator } from './CallStateSimulator'
 import { CallState } from '../../types/callState'
-import { VoiceControlsBar } from './VoiceControlsBar'
 import { EventProofModal, ProofEvent } from './EventProofModal'
 import {
   Languages,
   Sparkles,
   RefreshCw,
-  User,
   Mic,
   MicOff,
   Send,
@@ -27,7 +24,6 @@ import {
   PhoneCall,
   PhoneOff,
   ChevronDown,
-  Volume2,
   X
 } from 'lucide-react'
 
@@ -250,15 +246,14 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   const { isDevMode } = useDevMode()
   const [isCallActive, setIsCallActive] = useState<boolean>(true)
   const [callState, setCallState] = useState<CallState>('RELAY_LISTENING')
-  const [isAiPaused, setIsAiPaused] = useState<boolean>(false)
+  const [isAiPaused, _setIsAiPaused] = useState<boolean>(false)
   const [isMuted, setIsMuted] = useState<boolean>(false)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const [suggestionBankIdx, setSuggestionBankIdx] = useState<number>(0)
   const [aiWorkingState, setAiWorkingState] = useState<AiWorkingState>('AI Listening...')
   const [currentLoopStage, setCurrentLoopStage] = useState<RelayLoopStage>('LISTEN')
-  const [agentGender, setAgentGender] = useState<'female' | 'male'>('female')
+  const [agentGender, _setAgentGender] = useState<'female' | 'male'>('female')
   const [manualText, setManualText] = useState<string>('')
-  const [callDuration, setCallDuration] = useState<number>(161)
   const [selectedPromptCategory, setSelectedPromptCategory] = useState<string>('refund')
   const [showTestCasesTray, setShowTestCasesTray] = useState<boolean>(false)
   const [showFailureModal, setShowFailureModal] = useState<boolean>(false)
@@ -266,7 +261,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   const [customAttackPrompt, setCustomAttackPrompt] = useState<string>('')
 
   const [isProofModalOpen, setIsProofModalOpen] = useState<boolean>(false)
-  const [selectedProofEvent] = useState<ProofEvent | null>(null)
+  const [selectedProofEvent, _setSelectedProofEvent] = useState<ProofEvent | null>(null)
 
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null)
   const isProcessingTurnRef = useRef<boolean>(false)
@@ -281,20 +276,6 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
       language: 'Hindi / English',
     }
   ])
-
-  useEffect(() => {
-    if (!isCallActive) return
-    const timer = setInterval(() => {
-      setCallDuration((prev) => prev + 1)
-    }, 1000)
-    return () => clearInterval(timer)
-  }, [isCallActive])
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return (mins < 10 ? '0' : '') + mins + ':' + (secs < 10 ? '0' : '') + secs
-  }
 
   useEffect(() => {
     if (transcriptScrollRef.current) {
@@ -1055,7 +1036,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
           ? 'bg-canvas-pure border-border-subtle'
           : 'bg-canvas-subtle border-border-subtle'
       )}>
-        {/* Left: Prominent Live Call Button & Session State */}
+        {/* Left: Prominent Live Call Button & Clear State */}
         <div className="flex items-center gap-3">
           <Button
             variant={isCallActive ? 'outline' : 'primary'}
@@ -1068,11 +1049,11 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             )}
           >
             {isCallActive ? <PhoneOff className="w-3.5 h-3.5 text-rose-500" /> : <PhoneCall className="w-3.5 h-3.5" />}
-            <span>{isCallActive ? 'END CALL' : '🎙 START REAL CALL'}</span>
+            <span>{isCallActive ? 'END CALL' : 'START CALL'}</span>
           </Button>
 
           <div className="flex items-center gap-2">
-            <span className={"w-2.5 h-2.5 rounded-full " + (
+            <span className={"w-2 h-2 rounded-full " + (
               !isCallActive
                 ? 'bg-ink-muted'
                 : isHumanTakeover
@@ -1086,65 +1067,27 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                 ? 'text-amber-500'
                 : 'text-ink-primary'
             )}>
-              {isHumanTakeover ? 'HUMAN IN CONTROL (Maya Sharma)' : isCallActive ? 'LIVE AGORA RTC CALL' : 'STANDBY'}
+              {isHumanTakeover ? 'HUMAN IN CONTROL' : isCallActive ? 'LIVE CALL' : 'STANDBY'}
             </span>
           </div>
 
-          <span className="text-border font-mono hidden md:inline">|</span>
-          <div className="hidden md:flex items-center gap-1.5 font-mono text-xs text-ink-secondary font-medium">
-            <User className="w-3.5 h-3.5 text-accent" />
-            <span>{caseState.customerName || 'Aarav Patel'} (Order #{caseState.orderId || '72143'})</span>
+          <div className="hidden md:flex items-center gap-1.5 font-mono text-xs text-ink-muted">
+            <span>·</span>
+            <span className="text-ink-secondary">{caseState.customerName || 'Aarav Patel'} (Order #{caseState.orderId || '72143'})</span>
           </div>
-
-          <span className="text-border font-mono hidden sm:inline">|</span>
-          <span className="font-mono text-xs text-ink-muted tabular-nums hidden sm:inline">{formatDuration(callDuration)}</span>
         </div>
 
-        {/* Center: Live Waveform Monitor */}
-        {isCallActive && (
-          <div className="hidden lg:flex items-center gap-2 bg-canvas-subtle/80 px-2.5 py-1 rounded border border-border-subtle">
-            <Volume2 className="w-3.5 h-3.5 text-accent animate-pulse" />
-            <div className="w-24 h-4 flex items-center opacity-90">
-              <WaveformMonitor callState={callState} />
-            </div>
-          </div>
-        )}
-
-        {/* Right: Quick Failure Simulator, Takeover Switch & Voice Profile */}
+        {/* Right: Primary Demo Actions (Attack Mode & Human Takeover) */}
         <div className="flex items-center gap-2">
-                    {/* ATTACK RELAY (RED-TEAM DEMO TRIGGER) */}
+          {/* ATTACK RELAY (RED-TEAM DEMO TRIGGER) */}
           <button
             type="button"
             onClick={() => setShowAttackModal(true)}
-            className="text-[10px] font-mono font-bold px-2.5 py-1 rounded border border-rose-500/70 text-rose-300 hover:bg-rose-950/80 bg-rose-950/40 transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm animate-pulse"
+            className="text-[10px] font-mono font-bold px-2.5 py-1 rounded border border-rose-500/70 text-rose-300 hover:bg-rose-950/80 bg-rose-950/40 transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
             title="Launch Red-Team Attack: Test Prompt Injection, Jailbreak & Guardrail Defense"
           >
             <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
             <span>⚔ ATTACK RELAY</span>
-          </button>
-
-          {/* SIMULATE TRACKING FAILURE KILLER DEMO TRIGGER */}
-          <button
-            type="button"
-            onClick={() => triggerFailureSimulation('TOOL_TIMEOUT')}
-            className="text-[10px] font-mono font-bold px-2.5 py-1 rounded border border-rose-500/40 text-rose-500 hover:bg-rose-500/10 bg-canvas-subtle transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
-            title="Simulate Tracking Failure: Timeout ➔ Retry 1 ➔ Retry 2 ➔ Classified ➔ Escalated"
-          >
-            <AlertTriangle className="w-3 h-3 text-rose-500" />
-            <span>⚠ SIMULATE TRACKING FAILURE</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              const next = agentGender === 'female' ? 'male' : 'female'
-              setAgentGender(next)
-              speechService.setAgentGender(next)
-            }}
-            className="text-[10px] font-mono font-bold px-2 py-1 rounded border border-border-subtle hover:border-accent text-ink-secondary hover:text-accent bg-canvas-subtle transition-colors cursor-pointer hidden sm:flex items-center gap-1"
-            title="Toggle Agent Voice Profile"
-          >
-            <span>Voice: {agentGender === 'female' ? '♀ SITA' : '♂ RAM'}</span>
           </button>
 
           <Button
@@ -1238,7 +1181,6 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
             >
               {/* Speaker Header */}
               <div className="flex items-center gap-2 font-mono text-[10px] select-none px-1">
-                <span className="text-ink-muted tabular-nums">{item.timestamp}</span>
                 <span
                   className={"font-bold px-1.5 py-0.2 rounded uppercase tracking-wider " + (
                     isCustomer
@@ -1248,9 +1190,8 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
                       : 'bg-accent text-white'
                   )}
                 >
-                  {item.isInterim ? 'STREAMING...' : item.speaker}
+                  {item.isInterim ? 'LISTENING...' : item.speaker}
                 </span>
-                {item.language && <span className="text-ink-muted">• {item.language}</span>}
               </div>
 
               {/* Message Bubble */}
@@ -1442,23 +1383,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
       </div>
 
-      {/* 9. CALL CONTROLS BAR */}
-      <VoiceControlsBar
-        isHumanTakeover={isHumanTakeover}
-        isAiPaused={isAiPaused}
-        onToggleTakeover={() => {
-          if (!isHumanTakeover) {
-            triggerHumanTakeover('Operator clicked takeover')
-          } else {
-            agoraRtc.setHumanTakeover(false)
-            onToggleTakeover()
-            setCallState('RELAY_LISTENING')
-            setAiWorkingState('AI Listening...')
-          }
-        }}
-        onTogglePauseAi={() => setIsAiPaused(!isAiPaused)}
-        onEndCall={handleToggleCall}
-      />
+
 
       {/* 10. DEVELOPER SCENARIO BAR */}
       {isDevMode && (

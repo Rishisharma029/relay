@@ -4,7 +4,6 @@ import {
   Check,
   RotateCcw,
   Sparkles,
-  Wrench,
   Headphones,
   AlertTriangle,
   ShieldCheck,
@@ -12,9 +11,6 @@ import {
 } from 'lucide-react'
 import { soundEffects } from '../../utils/soundEffects'
 import { useCaseState } from '../../contexts/CaseStateContext'
-import { useDevMode } from '../../contexts/DevModeContext'
-import { agoraRtc } from '../../services/agoraRtcService'
-import { telemetryCollector, MeasuredTelemetry } from '../../services/telemetryCollector'
 import { speechService } from '../../services/speechRecognitionService'
 import { PolicyCitationModal } from './PolicyCitationModal'
 import { PolicyCitation } from '../../types/knowledge'
@@ -31,10 +27,8 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({
   onToggleTakeover: _onToggleTakeover
 }) => {
   const { caseState, setCaseState } = useCaseState()
-  const { isDevMode } = useDevMode()
   const [refundState, setRefundState] = useState<RefundActionState>('awaiting_approval')
   const [approvalTime, setApprovalTime] = useState<string>('')
-  const [measured] = useState<MeasuredTelemetry>(telemetryCollector.getSnapshot())
   const [isPolicyModalOpen, setIsPolicyModalOpen] = useState<boolean>(false)
 
   const activeCitation: PolicyCitation = {
@@ -373,51 +367,6 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({
           </div>
         )}
 
-        {/* 6. AI SAFETY & GOVERNANCE BOUNDARY */}
-        <div className="bg-canvas-subtle p-3 rounded-[6px] border border-border-subtle space-y-2 font-mono text-[10px] mt-2">
-          <div className="flex items-center gap-1.5 font-bold text-ink-primary uppercase tracking-wider">
-            <ShieldCheck className="w-3.5 h-3.5 text-accent" />
-            <span>AI SAFETY &amp; GOVERNANCE BOUNDARY</span>
-          </div>
-          <div className="grid grid-cols-2 gap-1.5">
-            <div className="p-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded space-y-0.5">
-              <span className="font-bold text-emerald-600 block pb-0.5 border-b border-emerald-500/20">AI CAN:</span>
-              <div className="text-ink-primary">• listen</div>
-              <div className="text-ink-primary">• understand</div>
-              <div className="text-ink-primary">• retrieve</div>
-              <div className="text-ink-primary">• recommend</div>
-              <div className="text-ink-primary">• create low-risk actions</div>
-              <div className="text-ink-primary">• prepare approvals</div>
-            </div>
-            <div className="p-1.5 bg-rose-500/10 border border-rose-500/20 rounded space-y-0.5">
-              <span className="font-bold text-rose-600 block pb-0.5 border-b border-rose-500/20">AI CANNOT:</span>
-              <div className="text-ink-primary">• bypass policy</div>
-              <div className="text-ink-primary">• access arbitrary tools</div>
-              <div className="text-ink-primary">• execute financial actions</div>
-              <div className="text-ink-primary">• override human approval</div>
-            </div>
-          </div>
-        </div>
-
-        {/* 7. DEVELOPER & RTC METRICS */}
-        {isDevMode && (
-          <div className="bg-canvas-pure border border-accent/40 rounded-[6px] p-3 space-y-2 font-mono text-[10px] animate-in fade-in duration-150 mt-2">
-            <div className="flex items-center justify-between pb-1 border-b border-border-subtle">
-              <span className="font-bold text-accent uppercase flex items-center gap-1">
-                <Wrench className="w-3 h-3 text-accent" />
-                <span>DEV DIAGNOSTICS</span>
-              </span>
-              <span className="text-ops-live font-bold">{agoraRtc.getConnectionState()}</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1.5 text-ink-secondary">
-              <div>RTT: <strong className="text-ink-primary">{measured.rttMs} ms</strong></div>
-              <div>Packet Loss: <strong className="text-ink-primary">{(measured.packetLossRate * 100).toFixed(1)}%</strong></div>
-              <div>Jitter: <strong className="text-ink-primary">{measured.jitterMs} ms</strong></div>
-              <div>Audio Track: <strong className="text-ink-primary">{agoraRtc.getCallMode()}</strong></div>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* POLICY CITATION MODAL */}

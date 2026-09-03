@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Layers, Search, ArrowUpRight, ShieldAlert, Wrench, FolderPlus } from 'lucide-react'
-import { useCaseState } from '../../contexts/CaseStateContext'
 import { useDevMode } from '../../contexts/DevModeContext'
 
 export interface NotificationItem {
@@ -29,8 +28,8 @@ interface AppHeaderProps {
 export const AppHeader: React.FC<AppHeaderProps> = ({
   caseId = 'CASE-1042',
   caseTitle = 'Delivery dispute',
-  isConnected = true,
-  isHumanTakeover = false,
+  isConnected: _isConnected = true,
+  isHumanTakeover: _isHumanTakeover = false,
   onToggleDrawer,
   isDrawerOpen = true,
   onOpenSearch,
@@ -38,9 +37,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   onOpenDemoMode,
   onOpenNewCase,
 }) => {
-  const { runtimeMode, toggleRuntimeMode } = useCaseState()
   const { isDevMode, toggleDevMode } = useDevMode()
-  const [timeString, setTimeString] = useState<string>('')
   const [showNotifications, setShowNotifications] = useState<boolean>(false)
   const [notifications, setNotifications] = useState<NotificationItem[]>([
     {
@@ -76,18 +73,6 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   const transparencyRef = useRef<HTMLDivElement | null>(null)
   const [showTransparencyPopover, setShowTransparencyPopover] = useState<boolean>(false)
 
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date()
-      const hours = String(now.getHours()).padStart(2, '0')
-      const minutes = String(now.getMinutes()).padStart(2, '0')
-      const seconds = String(now.getSeconds()).padStart(2, '0')
-      setTimeString(`${hours}:${minutes}:${seconds}`)
-    }
-    updateTime()
-    const timer = setInterval(updateTime, 1000)
-    return () => clearInterval(timer)
-  }, [])
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -150,65 +135,21 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
             {caseTitle}
           </span>
         </div>
-
-        <div className="h-3.5 w-px bg-border-subtle" />
-
-        {/* Connection Status & Active Actor Badge */}
-        {isConnected && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider">
-              <span className="w-1.5 h-1.5 rounded-full bg-ops-live shrink-0" />
-              <span className="text-ops-live font-semibold">CONNECTED</span>
-            </div>
-
-            <div
-              className={`font-mono text-[10px] uppercase px-1.5 py-0.2 rounded font-bold tracking-wider ${
-                isHumanTakeover
-                  ? 'bg-ops-warningBg text-ops-warning border border-[#FDE68A]'
-                  : 'bg-accent-subtle text-accent border border-accent-border'
-              }`}
-            >
-              {isHumanTakeover ? '● MAYA ACTIVE' : '● RELAY ACTIVE'}
-            </div>
-          </div>
-        )}
-
-        <div className="h-3.5 w-px bg-border-subtle hidden md:block" />
-
-        {/* Live Clock */}
-        <div className="font-mono text-[11px] text-ink-primary font-semibold tabular-nums hidden md:block">
-          {timeString || '21:34:18'}
-        </div>
       </div>
 
-      {/* Center/Right: New Case, Runtime Mode Switcher, Global Search, Notifications */}
+      {/* Center/Right: New Case, Demo Scenarios, Global Search, Notifications */}
       <div className="flex items-center gap-2.5">
         {/* NEW LIVE CASE TRIGGER */}
         {onOpenNewCase && (
           <button
             type="button"
             onClick={onOpenNewCase}
-            className="flex items-center gap-1 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] border border-accent-border rounded-[3px] px-2 py-0.5 text-xs font-mono font-bold tracking-wider uppercase transition-colors cursor-pointer shadow-hairline"
+            className="flex items-center gap-1 bg-accent text-white hover:bg-accent-hover active:bg-[#083070] border border-accent-border rounded-[3px] px-2.5 py-1 text-xs font-mono font-bold tracking-wider uppercase transition-colors cursor-pointer shadow-hairline"
             title="Start New Live Case"
           >
             <span>+ NEW CASE</span>
           </button>
         )}
-
-        {/* RUNTIME MODE SWITCHER: REAL vs DEMO */}
-        <button
-          type="button"
-          onClick={toggleRuntimeMode}
-          className={`font-mono text-[10px] uppercase px-2 py-0.5 rounded-[3px] font-bold tracking-wider border transition-colors cursor-pointer flex items-center gap-1.5 ${
-            runtimeMode === 'REAL'
-              ? 'bg-ops-liveBg text-ops-live border-ops-liveBorder'
-              : 'bg-accent-subtle text-accent border-accent-border'
-          }`}
-          title="Toggle between LIVE CALL (WebRTC) and DEMO SIMULATION"
-        >
-          <span className={`w-1.5 h-1.5 rounded-full ${runtimeMode === 'REAL' ? 'bg-ops-live animate-pulse' : 'bg-accent'}`} />
-          <span>{runtimeMode === 'REAL' ? 'LIVE' : 'DEMO'}</span>
-        </button>
 
         {/* SECTION 41: DEMO SCENARIOS TRIGGER */}
         {onOpenDemoMode && (
