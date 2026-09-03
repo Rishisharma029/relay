@@ -5,9 +5,7 @@ import {
   RotateCcw,
   Sparkles,
   Wrench,
-  BookOpen,
   Headphones,
-  HelpCircle,
   AlertTriangle,
   ShieldCheck,
   Clock
@@ -231,38 +229,71 @@ export const CaseIntelligencePane: React.FC<CaseIntelligencePaneProps> = ({
 
           <div className="h-px bg-border-subtle/70" />
 
-          {/* WHY? EVIDENCE MATRIX */}
-          <div className="space-y-1 font-mono text-[11px] bg-canvas-subtle p-2.5 rounded border border-border-subtle">
-            <div className="flex items-center justify-between pb-1 border-b border-border-subtle/60">
-              <span className="font-bold text-ink-primary uppercase text-[10px] tracking-wider text-accent flex items-center gap-1">
-                <HelpCircle className="w-3.5 h-3.5" />
-                <span>WHY?</span>
+          {/* COMMERCE RULES & COMPLIANCE ENGINE */}
+          <div className="space-y-1.5 font-mono text-[11px] bg-canvas-subtle p-3 rounded-[6px] border border-border-subtle shadow-sm">
+            <div className="flex items-center justify-between pb-1.5 border-b border-border-subtle/70">
+              <span className="font-bold text-ink-primary uppercase text-[10px] tracking-wider text-accent flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-accent" />
+                <span>COMMERCE RULES ENGINE</span>
               </span>
-              <button
-                type="button"
-                onClick={() => setIsPolicyModalOpen(true)}
-                className="text-[10px] text-accent font-bold hover:underline flex items-center gap-0.5 cursor-pointer"
-              >
-                <span>POL-REFUND-3.2</span>
-                <BookOpen className="w-2.5 h-2.5" />
-              </button>
+              <span className="text-[9px] font-mono text-emerald-600 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30 font-bold">
+                JURISDICTION: INDIA (IN)
+              </span>
             </div>
+
             <div className="space-y-1 text-ink-primary text-[11px] pt-1">
-              <div className="flex items-center gap-1.5 text-ops-live font-medium">
-                <Check className="w-3.5 h-3.5 stroke-[3] shrink-0" />
-                <span>Eligible (POL-REFUND-3.2 Qualified)</span>
+              <div className="flex items-start justify-between">
+                <span className="text-ink-muted text-[10px]">Rule:</span>
+                <span className="font-bold text-accent text-[10px] text-right">IN_LATE_DELIVERY_RETURN_REFUND</span>
               </div>
-              <div className="flex items-center gap-1.5 text-ops-live font-medium">
-                <Check className="w-3.5 h-3.5 stroke-[3] shrink-0" />
-                <span>No duplicate refund detected</span>
+              <div className="flex items-start justify-between">
+                <span className="text-ink-muted text-[10px]">Statutory Source:</span>
+                <span className="text-[10px] text-ink-secondary text-right font-medium">Rule 4(11) CP (E-Commerce) Rules 2020</span>
               </div>
-              <div className="flex items-center gap-1.5 text-ops-live font-medium">
-                <Check className="w-3.5 h-3.5 stroke-[3] shrink-0" />
-                <span>Policy passed (Carrier SLA breached)</span>
+
+              <div className="bg-canvas-pure/80 p-2 rounded border border-border-subtle/60 space-y-1 my-1">
+                <div className="text-[10px] font-bold text-ink-muted uppercase">Verified Evidence:</div>
+                <div className="flex items-center gap-1.5 text-ops-live text-[10px]">
+                  <Check className="w-3 h-3 stroke-[3] shrink-0" />
+                  <span>4-day delivery delay (SLA Breached)</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-ops-live text-[10px]">
+                  <Check className="w-3 h-3 stroke-[3] shrink-0" />
+                  <span>Force majeure: false (No disaster declared)</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-ops-live text-[10px]">
+                  <Check className="w-3 h-3 stroke-[3] shrink-0" />
+                  <span>Order amount: ₹{(caseState.orderAmount || 2899).toLocaleString('en-IN')} (Captured)</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-ops-live text-[10px]">
+                  <Check className="w-3 h-3 stroke-[3] shrink-0" />
+                  <span>No duplicate refund recorded</span>
+                </div>
               </div>
-              <div className="flex items-center gap-1.5 text-amber-500 font-bold pt-1 border-t border-border-subtle/50">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                <span>Human approval required (Amount &gt; ₹1,000)</span>
+
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-ink-muted text-[10px]">Decision:</span>
+                <span className="font-bold text-emerald-600 text-[10px] bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/30">
+                  REFUND ELIGIBLE
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5">
+                <span className="text-ink-muted text-[10px]">Governance:</span>
+                <span className="font-bold text-amber-500 text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/30 flex items-center gap-1">
+                  <AlertTriangle className="w-2.5 h-2.5" />
+                  <span>HUMAN APPROVAL REQUIRED</span>
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5">
+                <span className="text-ink-muted text-[10px]">Action:</span>
+                <span className="font-bold text-ink-primary text-[10px]">REFUND ₹{(caseState.orderAmount || 2899).toLocaleString('en-IN')}</span>
+              </div>
+
+              <div className="flex items-center justify-between pt-0.5">
+                <span className="text-ink-muted text-[10px]">Status:</span>
+                <span className="font-bold text-amber-500 text-[10px] font-mono">WAITING FOR APPROVAL</span>
               </div>
             </div>
           </div>

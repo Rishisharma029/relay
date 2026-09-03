@@ -188,29 +188,60 @@ class AgoraRtcService {
       // STEP 2: Initialize WebRTC Client & Listeners
       this.client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' })
 
+      // Autoplay fallback handler
+      AgoraRTC.onAutoplayFailed = () => {
+        console.warn('[Agora RTC] Browser blocked audio autoplay. Listening for user gesture to unlock...')
+        const unlock = () => {
+          this.remoteAudioTracks.forEach((track) => {
+            try {
+              track.play()
+              console.log('[Agora RTC] Resumed audio track on user gesture.')
+            } catch (e) {}
+          })
+        }
+        window.addEventListener('click', unlock, { once: true })
+        window.addEventListener('touchstart', unlock, { once: true })
+      }
+
+      this.client.on('user-joined', (user: IAgoraRTCRemoteUser) => {
+        console.log(`[Agora RTC] 👤 Remote participant joined channel: UID=${user.uid}`)
+        this.emitTelemetry()
+      })
+
       this.client.on('user-published', async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        console.log(`[Agora RTC] 📡 Remote media published: UID=${user.uid}, type=${mediaType}`)
         if (mediaType === 'audio') {
-          await this.client?.subscribe(user, mediaType)
-          if (user.audioTrack) {
-            this.remoteAudioTracks.set(user.uid, user.audioTrack)
-            if (!this.isAiPaused) {
-              user.audioTrack.play()
+          try {
+            await this.client?.subscribe(user, mediaType)
+            console.log(`[Agora RTC] ✅ Subscribed to remote audio track for UID=${user.uid}`)
+            if (user.audioTrack) {
+              user.audioTrack.setVolume(100)
+              this.remoteAudioTracks.set(user.uid, user.audioTrack)
+              if (!this.isAiPaused && !this.isHumanTakeover) {
+                console.log(`[Agora RTC] 🔊 Playing remote audio track for UID=${user.uid}`)
+                user.audioTrack.play()
+              }
+              this.setupRemoteAudioAnalysis(user.audioTrack)
             }
-            this.setupRemoteAudioAnalysis(user.audioTrack)
+          } catch (err) {
+            console.error(`[Agora RTC] ❌ Error subscribing/playing audio for UID=${user.uid}:`, err)
           }
           this.emitTelemetry()
         }
       })
 
       this.client.on('user-unpublished', (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
+        console.log(`[Agora RTC] 📴 Remote media unpublished: UID=${user.uid}, type=${mediaType}`)
         if (mediaType === 'audio') {
           this.remoteAudioTracks.delete(user.uid)
           this.emitTelemetry()
         }
       })
 
-      this.client.on('user-joined', () => this.emitTelemetry())
-      this.client.on('user-left', () => this.emitTelemetry())
+      this.client.on('user-left', (user: IAgoraRTCRemoteUser) => {
+        console.log(`[Agora RTC] 🚪 Remote participant left channel: UID=${user.uid}`)
+        this.emitTelemetry()
+      })
 
       this.client.on('connection-state-change', (curState) => {
         if (curState === 'CONNECTED') this.updateState('CONNECTED')
@@ -524,9 +555,17 @@ class AgoraRtcService {
     this.interruptionSubscribers.forEach((cb) => cb({ timestamp, latencyMs: 12 }))
     this.emitTelemetry()
 
-    // 4. Auto-resume normal listening state after 2.8s
+    // 4. Auto-resume normal listening and remote playback state after 2.8s
     setTimeout(() => {
       this.isInterrupted = false
+      if (!this.isAiPaused && !this.isHumanTakeover) {
+        this.remoteAudioTracks.forEach((track) => {
+          try {
+            track.play()
+            console.log('[Agora RTC] Resumed remote audio track after interruption.')
+          } catch (e) {}
+        })
+      }
       this.emitTelemetry()
     }, 2800)
   }

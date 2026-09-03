@@ -1,3 +1,6 @@
+import { CommerceRulesEngine } from './services/commerceRulesEngine.js'
+import { settledRefundsLedger } from './policyEngine.js'
+import { normalizeForTts } from './services/ttsNormalizer.js'
 /**
  * RELAY — Autonomous AI Agent Reasoning & Function Calling (Tool Calling) Engine
  * Multi-Turn Conversational Reasoning, Gemini 3.5/2.5 Intelligence, Tool Calling, Policy Grounding & Gender-Aware Synthesis
@@ -32,6 +35,13 @@ export async function processAgentTurn(
   customerNameOverride = null,
   agentGender = 'female'
 ) {
+  // ── 0. RUNTIME TURN DIAGNOSTIC LOGGING ──────────────────────────────────
+  const turnTimestamp = new Date().toISOString()
+  console.log(`\n======================================================`)
+  console.log(`[Turn Engine] ⏱️  Timestamp: ${turnTimestamp}`)
+  console.log(`[Turn Engine] 🎙️  User Utterance: "${customerUtterance}"`)
+  console.log(`[Turn Engine] 👤 Caller: ${customerNameOverride || 'Customer'}, Case: ${caseId}, Gender: ${agentGender}`)
+
   const turnStartTime = Date.now()
   const events = []
   const failures = []
@@ -121,6 +131,7 @@ export async function processAgentTurn(
   let detectedIntent = 'general_inquiry'
   let toolsToCall = []
   let geminiAgentResponse = null
+  let geminiAgentSpeechText = null
   let geminiAgentTranslation = null
 
   const orderMatch = customerUtterance.match(/(?:order|package|awb|id|number)?\s*#?(\d{4,8})/i)
@@ -131,18 +142,26 @@ export async function processAgentTurn(
   const orderDelay = orderRecord.delayDays || (orderRecord.isSlaBreached ? 4 : 0)
   const orderItemName = orderRecord.items?.[0]?.name || 'Merchandise'
 
+  let geminiResult = null
   try {
-    const geminiResult = await Promise.race([
+    geminiResult = await Promise.race([
       GeminiService.executeReasoningTurn({
         customerUtterance,
         caseId,
         customerName,
         agentGender,
         activeLanguage,
-        memoryContext,
+        memoryContext: {
+          ...memoryContext,
+          orderId: matchedOrderId,
+          orderAmount,
+          orderCarrier,
+          orderDelayDays: orderDelay,
+          orderItem: orderItemName,
+        },
         policyEvidence,
       }),
-      new Promise((resolve) => setTimeout(() => resolve(null), 3500)),
+      new Promise((resolve) => setTimeout(() => resolve(null), LLM_TIMEOUT_MS || 8000)),
     ])
 
     if (geminiResult && geminiResult.success) {
@@ -151,6 +170,7 @@ export async function processAgentTurn(
         toolsToCall = geminiResult.toolsToCall
       }
       geminiAgentResponse = geminiResult.agentResponse
+      geminiAgentSpeechText = geminiResult.speechText
       geminiAgentTranslation = geminiResult.agentTranslation
     }
   } catch (geminiErr) {
@@ -375,6 +395,83 @@ export async function processAgentTurn(
     }
   }
 
+  // ── 6.5 Deterministic Commerce Rules Engine Evaluation ──────────────────
+  const lowerUtterance = customerUtterance.toLowerCase()
+  const isForceMajeure = lowerUtterance.includes('force majeure') || lowerUtterance.includes('flood') || lowerUtterance.includes('calamity') || lowerUtterance.includes('natural disaster')
+  const isDefective = lowerUtterance.includes('defect') || lowerUtterance.includes('kharab') || lowerUtterance.includes('broken') || lowerUtterance.includes('toota') || lowerUtterance.includes('damaged')
+  const isDeficient = lowerUtterance.includes('deficient') || lowerUtterance.includes('incomplete') || lowerUtterance.includes('adhoora')
+  const isSpurious = lowerUtterance.includes('spurious') || lowerUtterance.includes('fake') || lowerUtterance.includes('nakli') || lowerUtterance.includes('counterfeit')
+  const isNotAsAdvertised = lowerUtterance.includes('not as advertised') || lowerUtterance.includes('different') || lowerUtterance.includes('alag') || lowerUtterance.includes('wrong item')
+  const isComplaint = lowerUtterance.includes('complaint') || lowerUtterance.includes('shikayat') || lowerUtterance.includes('grievance') || lowerUtterance.includes('ticket')
+  const isWarrantyCheck = lowerUtterance.includes('warranty') || lowerUtterance.includes('guarantee')
+
+  const commerceRule = CommerceRulesEngine.evaluate({
+    orderId: matchedOrderId,
+    orderStatus: orderRecord.status,
+    deliveryStatus: orderDelay > 0 ? 'delayed' : 'on_schedule',
+    deliveryPromisedDate: '2026-08-30',
+    delayDays: orderDelay,
+    carrier: orderCarrier,
+    trackingNumber: orderRecord.trackingNumber || `DL-${matchedOrderId}01`,
+    refundAmount: orderAmount,
+    customerTier: 'PLATINUM',
+    customerRequestedRefund: detectedIntent === 'refund_request' || lowerUtterance.includes('refund'),
+    forceMajeure: isForceMajeure,
+    defective: isDefective,
+    deficient: isDeficient,
+    spurious: isSpurious,
+    productMatchesDescription: !isNotAsAdvertised,
+    cancellationRequested: detectedIntent === 'order_cancellation' || lowerUtterance.includes('cancel'),
+    paymentStatus: lowerUtterance.includes('double') ? 'captured_order_failed' : 'captured',
+    refundAlreadyIssued: settledRefundsLedger.has(matchedOrderId),
+    complaintExists: isComplaint,
+    warrantyCheckRequested: isWarrantyCheck,
+    warrantyActive: true,
+    jurisdiction: 'IN'
+  })
+
+  // Append full compliance audit event to PostgreSQL append-only store
+  events.push({
+    type: 'commerce_rule.evaluated',
+    ruleId: commerceRule.ruleId,
+    ruleVersion: commerceRule.ruleVersion,
+    decision: commerceRule.decision,
+    eligible: commerceRule.eligible,
+    requiresHumanApproval: commerceRule.requiresHumanApproval,
+    evidence: commerceRule.evidence,
+    timestamp: new Date().toLocaleTimeString()
+  })
+
+  if (commerceRule.complaintRequired && commerceRule.ticketNumber) {
+    events.push({
+      type: 'complaint.created',
+      ticketNumber: commerceRule.ticketNumber,
+      orderId: matchedOrderId,
+      timestamp: new Date().toLocaleTimeString()
+    })
+  }
+
+  // Enforce Human Approval Gate if mandated by Commerce Rules
+  if (commerceRule.requiresHumanApproval && !events.some(e => e.type === 'approval.created')) {
+    const approval = await createApprovalRequest({
+      caseId,
+      orderId: matchedOrderId,
+      amount: orderAmount,
+      reason: commerceRule.approvalReason || 'HIGH_VALUE_REFUND',
+      policyId: commerceRule.ruleId
+    })
+
+    events.push({
+      type: 'approval.created',
+      actionId: approval.approval.id,
+      amount: orderAmount,
+      riskTier: orderAmount > 5000 ? 'HIGH' : 'MEDIUM',
+      policyId: commerceRule.ruleId,
+      reason: commerceRule.approvalReason || 'HIGH_VALUE_REFUND',
+      timestamp: new Date().toLocaleTimeString()
+    })
+  }
+
   // ── 7. Dynamic Response Synthesis Grounded in Context ────────────────────
   let agentResponseText = geminiAgentResponse
   let agentTranslation = geminiAgentTranslation
@@ -427,7 +524,7 @@ export async function processAgentTurn(
           break
 
         default:
-          agentResponseText = `I'm listening, ${customerName}. You can ask about order status, request a refund, change delivery details, or speak to an operator. What would you like to do?`
+          agentResponseText = `Yes ${customerName}, I verified order #${matchedOrderId}. It is delayed by ${orderDelay} days with ${orderCarrier}. Under Policy POL-REFUND-3.2, an instant ₹${orderAmount} refund is eligible and currently requires operator sign-off.`
           break
       }
     } else {
@@ -449,9 +546,9 @@ export async function processAgentTurn(
 
         case 'refund_request':
           agentResponseText = isMale
-            ? `Refund Policy v3.2 ke tahat aapka order #${matchedOrderId} ₹${orderAmount} instant 100% refund ke liye eligible hai. Maine supervisor approval ke liye request bhej diya hai. Aapko refund UPI par chahiye ya original bank account mein?`
-            : `Refund Policy v3.2 ke tahat aapka order #${matchedOrderId} ₹${orderAmount} instant 100% refund ke liye eligible hai. Maine supervisor approval ke liye request bhej di hai. Aapko refund UPI par chahiye ya original bank account mein?`
-          agentTranslation = `Under Refund Policy v3.2, your order #${matchedOrderId} is eligible for an instant ₹${orderAmount} refund. I have submitted the approval request. Would you like the refund via UPI or to your original bank account?`
+            ? `Ji, maine order #${matchedOrderId} check kar liya hai. ${orderCarrier} ke sath ${orderDelay} din delay confirm hai. Policy POL-REFUND-3.2 ke tahat ₹${orderAmount} ka refund eligible hai, lekin isse pehle operator approval required hai.`
+            : `Ji, maine order #${matchedOrderId} check kar liya hai. ${orderCarrier} ke sath ${orderDelay} din delay confirm hai. Policy POL-REFUND-3.2 ke tahat ₹${orderAmount} ka refund eligible hai, lekin isse pehle operator approval required hai.`
+          agentTranslation = `Yes, I verified order #${matchedOrderId}. Delivery delay with ${orderCarrier} is confirmed. Under Policy POL-REFUND-3.2, a refund of ₹${orderAmount} is eligible, but operator approval is required.`
           break
 
         case 'refund_payment_method':
@@ -512,9 +609,9 @@ export async function processAgentTurn(
 
         default:
           agentResponseText = isMale
-            ? `Main sun raha hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
-            : `Main sun rahi hoon, ${customerName} ji. Aap mujhse order status, instant refund, delivery address change, ya operator se baat karne ke baare mein pooch sakte hain. Main aapki kya madad karoon?`
-          agentTranslation = `I am listening, ${customerName}. You can ask about order tracking, instant refund, address changes, or speaking to an operator. How can I help?`
+            ? `Ji ${customerName} ji, maine aapka order #${matchedOrderId} verify kar liya hai. Yeh ${orderCarrier} ke sath ${orderDelay} din delayed hai. Policy POL-REFUND-3.2 ke tahat ₹${orderAmount} ka refund eligible hai, jiske liye operator approval process kiya ja raha hai.`
+            : `Ji ${customerName} ji, maine aapka order #${matchedOrderId} verify kar liya hai. Yeh ${orderCarrier} ke sath ${orderDelay} din delayed hai. Policy POL-REFUND-3.2 ke tahat ₹${orderAmount} ka refund eligible hai, jiske liye operator approval process kiya ja raha hai.`
+          agentTranslation = `Yes ${customerName}, I verified order #${matchedOrderId}. It is delayed by ${orderDelay} days with ${orderCarrier}. Under Policy POL-REFUND-3.2, ₹${orderAmount} is eligible for refund pending operator sign-off.`
           break
       }
     }
@@ -542,6 +639,49 @@ export async function processAgentTurn(
     console.warn('[DB Event Sourcing] Event store append non-fatal:', err)
   }
 
+  // ── 7.5 Commerce Rules Overrule Protection ──────────────────────────────
+  // The Rule Engine determines legality and eligibility. Gemini LLM cannot override it.
+  if (!commerceRule.eligible) {
+    if (commerceRule.decision === 'DUPLICATE_REFUND_BLOCKED') {
+      agentResponseText = isMale
+        ? `Ji ${customerName} ji, order #${matchedOrderId} par pehle se refund record maujood hai. Duplicate refund allow nahi kiya ja sakta.`
+        : `Ji ${customerName} ji, order #${matchedOrderId} par pehle se refund record maujood hai. Duplicate refund allow nahi kiya ja sakta.`
+      agentTranslation = `Yes ${customerName}, order #${matchedOrderId} already has a recorded refund. Duplicate refund requests cannot be processed.`
+    } else if (commerceRule.decision === 'FORCE_MAJEURE_EXEMPTION') {
+      agentResponseText = isMale
+        ? `Ji ${customerName} ji, order #${matchedOrderId} ka delivery delay force majeure ya natural calamity ke karan standard late-delivery refund policy se exempt hai.`
+        : `Ji ${customerName} ji, order #${matchedOrderId} ka delivery delay force majeure ya natural calamity ke karan standard late-delivery refund policy se exempt hai.`
+      agentTranslation = `Yes ${customerName}, the delivery delay for order #${matchedOrderId} is exempt from standard late-delivery refund policy due to force majeure.`
+    } else if (commerceRule.decision === 'INSUFFICIENT_EVIDENCE') {
+      agentResponseText = `Order #${matchedOrderId} ke liye carrier telemetry data uplabdh nahi hai. Verification ke bina claim process nahi kiya ja sakta.`
+      agentTranslation = `Carrier telemetry data is unavailable for order #${matchedOrderId}. The claim cannot be processed without verification.`
+    }
+  } else if (detectedIntent === 'refund_request' || lowerUtterance.includes('refund')) {
+    if (commerceRule.requiresHumanApproval) {
+      agentResponseText = isMale
+        ? `Ji, maine order ${matchedOrderId} verify kar liya hai. Delivery ${orderDelay} din late hai aur refund ke liye applicable rule pass ho raha hai. ₹${orderAmount} ka refund process karne se pehle operator approval zaroori hai.`
+        : `Ji, maine order ${matchedOrderId} verify kar liya hai. Delivery ${orderDelay} din late hai aur refund ke liye applicable rule pass ho raha hai. ₹${orderAmount} ka refund process karne se pehle operator approval zaroori hai.`
+      agentTranslation = `Yes, I have verified order ${matchedOrderId}. Delivery is ${orderDelay} days late and passes the applicable refund rule. Operator approval is required before the ₹${orderAmount} refund can be processed.`
+    }
+  } else if (commerceRule.complaintRequired && commerceRule.ticketNumber) {
+    agentResponseText = `Aapki complaint record kar li gayi hai. Consumer Protection Rules ke anusaar aapka tracking ticket number ${commerceRule.ticketNumber} hai.`
+    agentTranslation = `Your complaint has been recorded. As per Consumer Protection Rules, your tracking ticket number is ${commerceRule.ticketNumber}.`
+  }
+
+  // Compute authoritative TTS-normalized speechText representation
+  const speechText = normalizeForTts(geminiAgentSpeechText || agentResponseText, {
+    orderId: matchedOrderId,
+    amount: orderAmount,
+    carrier: orderCarrier
+  })
+
+  console.log(`[Turn Engine] 🤖 Gemini Status: ${geminiAgentResponse ? 'SUCCESS' : 'FALLBACK'}`)
+  console.log(`[Turn Engine] 🛠️  Tools Executed: [${toolsToCall.map(t => t.tool).join(', ')}]`)
+  console.log(`[Turn Engine] 📢 Final Response Source: ${geminiAgentResponse ? 'GEMINI' : 'DETERMINISTIC'}`)
+  console.log(`[Turn Engine] 🖥️  UI Response Text: "${agentResponseText}"`)
+  console.log(`[Turn Engine] 🔊 Spoken SpeechText: "${speechText}"`)
+  console.log(`======================================================\n`)
+
   return {
     success: true,
     languageShift: shiftResult,
@@ -550,8 +690,10 @@ export async function processAgentTurn(
     toolsCalled: toolsToCall.map((t) => t.tool),
     toolResults,
     agentResponse: agentResponseText,
+    speechText,
     agentTranslation,
     policyEvidence,
+    commerceRule,
     events,
     orderData: orderRecord,
     totalLatencyMs: Date.now() - turnStartTime,

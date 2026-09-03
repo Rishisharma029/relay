@@ -1,38 +1,30 @@
 /**
- * RELAY — 5-Point Server-Side Real Policy Engine
+ * RELAY — 5-Point Server-Side Real Policy Engine with Commerce Rules Integration
  *
  * Sits directly between AI intent and financial/action execution.
  *
- * Flow:
- *   AI → issueRefund
+ * Architecture:
+ *   AI Intent / Speech
  *          ↓
- *    evaluateRefundPolicy()
+ *   Commerce Rules Engine (India CP E-Commerce Rules 2020)
  *          ↓
- *  ┌─────────────────────────────┐
- *  │ order exists?               │
- *  │ customer verified?          │
- *  │ refund eligible?            │
- *  │ amount allowed?             │
- *  │ duplicate refund?           │
- *  └──────────────┬──────────────┘
- *                 ↓
- *        APPROVAL REQUIRED
+ *   5-Point Policy Gate Evaluation
+ *          ↓
+ *   Human Operator Approval Gate (if requiresApproval)
+ *          ↓
+ *   Action Execution (issueRefund)
  */
 
 import { lookupCustomer } from './tools/customer.js'
 import { lookupOrder } from './tools/orders.js'
 import { checkIdempotency, buildIdempotencyKey } from './idempotencyStore.js'
+import { CommerceRulesEngine } from './services/commerceRulesEngine.js'
 
 // In-memory ledger of executed refunds to detect duplicates
 export const settledRefundsLedger = new Set()
 
 /**
- * 5-Point Policy Gate Evaluation
- * 1. order exists?
- * 2. customer verified?
- * 3. refund eligible?
- * 4. amount allowed?
- * 5. duplicate refund?
+ * 5-Point Policy Gate Evaluation + Commerce Compliance Rules Check
  */
 export async function evaluatePolicyGates(params = {}) {
   const evaluatedAt = new Date().toISOString()
@@ -52,13 +44,11 @@ export async function evaluatePolicyGates(params = {}) {
   const customerTier = customerRes.tier || 'PLATINUM'
 
   // Gate 3: Refund Eligible?
-  // Delivery delay past SLA (+3d) or confirmed carrier exception code
   const isDelayed = (orderRes.delayDays || 0) > 0
   const hasException = orderRes.status === 'delivery_exception' || orderRes.status === 'DELIVERY_EXCEPTION'
   const isRefundEligible = isDelayed || hasException
 
   // Gate 4: Amount Allowed?
-  // Limit cannot exceed captured order amount or tier limit
   const maxTierCap = customerTier === 'PLATINUM' ? 25000 : 10000
   const isAmountAllowed = amount > 0 && amount <= orderTotal && amount <= maxTierCap
 
@@ -68,17 +58,40 @@ export async function evaluatePolicyGates(params = {}) {
   const isDuplicate = settledRefundsLedger.has(orderId) || idemCheck.isDuplicate
   const isNoDuplicateRefund = !isDuplicate
 
-  // Aggregate Evaluation
+  // Commerce Compliance Rules Evaluation
+  const commerceRule = CommerceRulesEngine.evaluate({
+    orderId,
+    orderStatus: orderRes.status,
+    deliveryStatus: isDelayed ? 'delayed' : 'on_schedule',
+    deliveryPromisedDate: '2026-08-30',
+    delayDays: orderRes.delayDays || (isDelayed ? 4 : 0),
+    carrier: orderRes.carrier || 'Delhivery Express',
+    trackingNumber: orderRes.trackingNumber || 'DL-7214301',
+    refundAmount: amount,
+    customerTier,
+    forceMajeure: Boolean(params.forceMajeure),
+    defective: Boolean(params.defective),
+    deficient: Boolean(params.deficient),
+    spurious: Boolean(params.spurious),
+    productMatchesDescription: params.productMatchesDescription !== undefined ? params.productMatchesDescription : true,
+    cancellationRequested: Boolean(params.cancellationRequested),
+    paymentStatus: params.paymentStatus || 'captured',
+    refundAlreadyIssued: isDuplicate,
+    jurisdiction: params.jurisdiction || 'IN'
+  })
+
+  // Aggregate Evaluation (Commerce Rules must pass + 5 policy gates)
   const allPassed =
     isOrderValid &&
     isCustomerValid &&
     isRefundEligible &&
     isAmountAllowed &&
-    isNoDuplicateRefund
+    isNoDuplicateRefund &&
+    commerceRule.eligible
 
   // Risk Classification
   const risk = amount > 5000 ? 'HIGH' : amount >= 1000 ? 'MEDIUM' : 'LOW'
-  const requiresApproval = amount >= 1000 || customerTier !== 'PLATINUM'
+  const requiresApproval = amount >= 1000 || customerTier !== 'PLATINUM' || commerceRule.requiresHumanApproval
 
   const reasons = []
   if (!isOrderValid) reasons.push(`Order #${orderId} does not exist in commerce gateway`)
@@ -86,6 +99,7 @@ export async function evaluatePolicyGates(params = {}) {
   if (!isRefundEligible) reasons.push('Logistics SLA has not been breached (no exception code)')
   if (!isAmountAllowed) reasons.push(`Requested amount ₹${amount} exceeds allowed cap ₹${orderTotal}`)
   if (isDuplicate) reasons.push(`Duplicate refund blocked: Order #${orderId} already settled`)
+  if (!commerceRule.eligible) reasons.push(`Commerce Rule [${commerceRule.ruleId}]: ${commerceRule.reason}`)
 
   return {
     allowed: allPassed,
@@ -95,12 +109,14 @@ export async function evaluatePolicyGates(params = {}) {
     policyId: 'POL-REFUND-3.2',
     section: 'Section 4.1',
     evaluatedAt,
+    commerceRule,
     checks: {
       orderExists: isOrderValid,
       customerVerified: isCustomerValid,
       refundEligible: isRefundEligible,
       amountAllowed: isAmountAllowed,
       noDuplicateRefund: isNoDuplicateRefund,
+      commerceRulesPass: commerceRule.eligible
     },
     reasons,
   }

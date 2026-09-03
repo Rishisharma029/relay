@@ -33,6 +33,15 @@ class SpeechRecognitionService {
     return this.isSynthesizingSpeech || (typeof window !== 'undefined' && !!window.speechSynthesis?.speaking)
   }
 
+  public cancelSpeech() {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      try {
+        window.speechSynthesis.cancel()
+      } catch (e) {}
+    }
+    this.isSynthesizingSpeech = false
+  }
+
   private initRecognition() {
     if (typeof window === 'undefined') return
 

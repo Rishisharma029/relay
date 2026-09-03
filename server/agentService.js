@@ -67,6 +67,7 @@ export async function startConversationalAgent(options = {}) {
     name: channelName,
     pipeline_id: pipelineId,
     properties: {
+      channel: channelName,
       token: agentTokenData.token || '',
       agent_rtc_uid: String(agentUid),
       remote_rtc_uids: [String(userUid)],

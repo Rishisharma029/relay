@@ -44,6 +44,8 @@ export const serverConfig = {
     openaiApiKey: process.env.OPENAI_API_KEY || '',
     deepgramApiKey: process.env.DEEPGRAM_API_KEY || '',
     elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
+    minimaxApiKey:    process.env.MINIMAX_API_KEY || '',
+    minimaxGroupId:   process.env.MINIMAX_GROUP_ID || '',
   },
 
   // Database & Cache

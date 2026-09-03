@@ -568,9 +568,12 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
   const processCustomerUtterance = async (utterance: string) => {
     if (!utterance || !utterance.trim() || isProcessingTurnRef.current) return
-    if (speechService.isSpeakingTTS()) return
+    if (speechService.isSpeakingTTS()) {
+      speechService.cancelSpeech()
+    }
 
     const cleanText = utterance.trim()
+    console.log('[LiveCall Turn] 🎙️ Processing customer utterance:', cleanText)
     const lower = cleanText.toLowerCase()
 
     if (
@@ -623,6 +626,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     setAiWorkingState('Detecting intent & routing tools...')
 
     let aiResponseText = ''
+    let speechTextToSpeak = ''
     let aiTranslationText = ''
     let toolsCalled: string[] = []
     let intentFound = 'general_inquiry'
@@ -666,7 +670,9 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
 
       if (response.ok) {
         const data = await response.json()
+        console.log('[LiveCall Turn] 📡 /api/agent/turn response payload:', data)
         aiResponseText = data.agentResponse || ''
+        speechTextToSpeak = data.speechText || data.agentResponse || ''
         aiTranslationText = data.agentTranslation || ''
         toolsCalled = data.toolsCalled || []
         intentFound = data.intent || 'general_inquiry'
@@ -789,7 +795,9 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
     if (!isHumanTakeover && !isAiPaused && isCallActive) {
       setCallState('RELAY_SPEAKING')
       setAiWorkingState('AI Responding...')
-      speechService.speak(aiResponseText, isHindi ? 'hi-IN' : 'en-US')
+      const finalSpoken = speechTextToSpeak || aiResponseText
+      console.log('[LiveCall Turn] 🔊 Speaking TTS-safe speechText:', finalSpoken)
+      speechService.speak(finalSpoken, 'en-US')
     }
 
     isProcessingTurnRef.current = false

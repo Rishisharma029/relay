@@ -21,10 +21,12 @@ export async function evaluateRefundPolicy(orderParam = '72143', callerSuppliedA
     riskTier: policyDecision.risk, // 'LOW' | 'MEDIUM' | 'HIGH'
     requiresHumanApproval: policyDecision.requiresApproval,
     checks: policyDecision.checks,
+    commerceRule: policyDecision.commerceRule,
     policyBasis: policyDecision.reasons.length > 0 ? policyDecision.reasons : [
       `Order delayed ${orderRes.delayDays || 4} days past SLA`,
       'Customer identity verified',
       'Policy POL-REFUND-3.2 Section 4.1 applied',
+      'Commerce Rules Engine Rule 4(11) verified',
       'Zero duplicate claims detected'
     ],
   }
@@ -35,10 +37,15 @@ export async function issueRefund(orderParam = '72143', callerSuppliedAmount = n
   const orderRes = await lookupOrder(cleanId)
   const numericAmount = orderRes.amount || 2899
 
-  return processRefundTransaction({
+  const txRes = await processRefundTransaction({
     orderId: cleanId,
     amount: numericAmount,
     currency: 'INR',
     reason: 'Customer refund approved by operator under SLA Policy POL-REFUND-3.2'
   })
+
+  // Register in settled refund idempotency ledger to prevent duplicates
+  import('../policyEngine.js').then(m => m.registerSettledRefund(cleanId)).catch(() => {})
+
+  return txRes
 }
