@@ -1,6 +1,7 @@
 import { CommerceRulesEngine } from './services/commerceRulesEngine.js'
 import { settledRefundsLedger } from './policyEngine.js'
 import { normalizeForTts } from './services/ttsNormalizer.js'
+import { GuardrailEngine } from './services/guardrailEngine.js'
 /**
  * RELAY — Autonomous AI Agent Reasoning & Function Calling (Tool Calling) Engine
  * Multi-Turn Conversational Reasoning, Gemini 3.5/2.5 Intelligence, Tool Calling, Policy Grounding & Gender-Aware Synthesis
@@ -47,6 +48,47 @@ export async function processAgentTurn(
   const failures = []
 
   let activeLanguage = sessionLanguageStore.getLanguage(caseId)
+
+  // ── 0.5 HARDENED GUARDRAIL & ATTACK FIREWALL ─────────────────────────────
+  const guardrailCheck = GuardrailEngine.evaluate(customerUtterance, { activeLanguage })
+  if (guardrailCheck.isAttack) {
+    console.warn(`[Guardrail Engine] 🚨 Attack Intercepted: ${guardrailCheck.name} ("${customerUtterance}")`)
+
+    events.push({
+      type: 'security.attack_intercepted',
+      threatLevel: guardrailCheck.threatLevel,
+      attackType: guardrailCheck.attackType,
+      name: guardrailCheck.name,
+      reasons: guardrailCheck.reasons,
+      timestamp: new Date().toLocaleTimeString(),
+    })
+
+    events.push({
+      type: 'failure.escalation_required',
+      reason: `Security Guardrail Triggered: ${guardrailCheck.name}`,
+      timestamp: new Date().toLocaleTimeString(),
+    })
+
+    console.log(`[Turn Engine] 🚨 Security Threat Detected: ${guardrailCheck.name}`)
+    console.log(`[Turn Engine] 🛡️  Autonomous Tools: LOCKED`)
+    console.log(`[Turn Engine] 👤 Human Escalation: MANDATORY`)
+    console.log(`[Turn Engine] 📢 Safe Response: "${guardrailCheck.safeResponse}"`)
+    console.log(`======================================================\n`)
+
+    return {
+      success: false,
+      isAttack: true,
+      attackDetails: guardrailCheck,
+      intent: 'security_violation',
+      toolsCalled: [],
+      toolResults: [],
+      agentResponse: guardrailCheck.safeResponse,
+      speechText: guardrailCheck.speechText,
+      events,
+      escalateToHuman: true,
+      totalLatencyMs: Date.now() - turnStartTime,
+    }
+  }
 
   // ── 1. Dynamic In-Call Language Shift Detection ──────────────────────────
   const shiftResult = detectLanguageShift(customerUtterance, activeLanguage)
