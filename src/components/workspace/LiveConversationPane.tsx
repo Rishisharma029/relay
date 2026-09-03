@@ -255,7 +255,8 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
   const [agentGender, _setAgentGender] = useState<'female' | 'male'>('female')
   const [manualText, setManualText] = useState<string>('')
   const [selectedPromptCategory, setSelectedPromptCategory] = useState<string>('refund')
-  const [showTestCasesTray, setShowTestCasesTray] = useState<boolean>(false)
+  const [showDemoTools, setShowDemoTools] = useState<boolean>(false)
+  const [demoToolsTab, setDemoToolsTab] = useState<'suggested' | 'benchmarks'>('suggested')
   const [showFailureModal, setShowFailureModal] = useState<boolean>(false)
   const [showAttackModal, setShowAttackModal] = useState<boolean>(false)
   const [customAttackPrompt, setCustomAttackPrompt] = useState<string>('')
@@ -1263,11 +1264,16 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={() => setShowTestCasesTray(!showTestCasesTray)}
-            className="text-[10px] font-mono text-ink-muted hover:text-accent flex items-center gap-1 cursor-pointer transition-colors"
+            onClick={() => setShowDemoTools(!showDemoTools)}
+            className={"text-[10px] font-mono px-2 py-0.5 rounded border transition-colors flex items-center gap-1.5 cursor-pointer " + (
+              showDemoTools
+                ? 'bg-accent/10 border-accent text-accent font-bold'
+                : 'text-ink-muted hover:text-accent border-border-subtle bg-canvas-subtle'
+            )}
+            title="Toggle Demo Tools (Suggested Responses & Benchmarks)"
           >
-            <span>Test Benchmarks</span>
-            <ChevronDown className={"w-3 h-3 transition-transform " + (showTestCasesTray ? 'rotate-180' : '')} />
+            <span>Demo Tools</span>
+            <ChevronDown className={"w-3 h-3 transition-transform " + (showDemoTools ? 'rotate-180' : '')} />
           </button>
 
           <button
@@ -1285,45 +1291,108 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </div>
       </div>
 
-      {/* 6. COLLAPSIBLE TEST BENCHMARKS TRAY */}
-      {showTestCasesTray && (
+      {/* 6. COLLAPSIBLE DEMO TOOLS TRAY (SUGGESTED RESPONSES & BENCHMARKS) */}
+      {showDemoTools && (
         <div className="bg-canvas-subtle border-t border-border-subtle p-2.5 px-4 shrink-0 space-y-2 animate-in slide-in-from-bottom-2 duration-100">
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            <span className="text-[9px] font-mono font-bold text-ink-muted uppercase shrink-0">DOMAINS:</span>
-            {Object.keys(INTENT_CATEGORY_PROMPTS).map((catKey) => {
-              const cat = INTENT_CATEGORY_PROMPTS[catKey]
-              const Icon = cat.icon
-              const isSelected = selectedPromptCategory === catKey
-              return (
-                <button
-                  key={catKey}
-                  type="button"
-                  onClick={() => setSelectedPromptCategory(catKey)}
-                  className={"px-2 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 border transition-all cursor-pointer " + (
-                    isSelected
-                      ? 'bg-accent text-white border-accent shadow-xs'
-                      : 'bg-canvas-pure text-ink-secondary hover:text-accent border-border-subtle'
-                  )}
-                >
-                  <Icon className="w-3 h-3" />
-                  <span>{cat.label}</span>
-                </button>
-              )
-            })}
+          {/* Sub-tabs header */}
+          <div className="flex items-center justify-between pb-1.5 border-b border-border-subtle/80">
+            <div className="flex items-center gap-1.5 font-mono text-[10px]">
+              <button
+                type="button"
+                onClick={() => setDemoToolsTab('suggested')}
+                className={"px-2 py-0.5 rounded font-bold transition-colors cursor-pointer " + (
+                  demoToolsTab === 'suggested'
+                    ? 'bg-accent text-white shadow-2xs'
+                    : 'text-ink-secondary hover:text-ink-primary bg-canvas-pure border border-border-subtle'
+                )}
+              >
+                Suggested Responses
+              </button>
+              <button
+                type="button"
+                onClick={() => setDemoToolsTab('benchmarks')}
+                className={"px-2 py-0.5 rounded font-bold transition-colors cursor-pointer " + (
+                  demoToolsTab === 'benchmarks'
+                    ? 'bg-accent text-white shadow-2xs'
+                    : 'text-ink-secondary hover:text-ink-primary bg-canvas-pure border border-border-subtle'
+                )}
+              >
+                Test Benchmarks
+              </button>
+            </div>
+
+            {demoToolsTab === 'suggested' && (
+              <button
+                type="button"
+                onClick={handleRefreshSuggestions}
+                className="text-[9px] font-mono text-accent font-bold hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+                <span>Next Variant</span>
+              </button>
+            )}
           </div>
 
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            {INTENT_CATEGORY_PROMPTS[selectedPromptCategory]?.phrases.map((phrase, idx) => (
-              <button
-                key={idx}
-                type="button"
-                onClick={() => processCustomerUtterance(phrase)}
-                className="px-2.5 py-1 bg-canvas-pure hover:bg-accent-subtle text-ink-primary hover:text-accent border border-border-subtle rounded text-[11px] font-sans truncate shrink-0 transition-colors cursor-pointer"
-              >
-                "{phrase}"
-              </button>
-            ))}
-          </div>
+          {/* Tab 1: Suggested Responses */}
+          {demoToolsTab === 'suggested' && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {SUGGESTION_BANKS[suggestionBankIdx].map((phrase, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => handleUseSuggestion(phrase, idx)}
+                  className="text-left p-1.5 rounded bg-canvas-pure hover:bg-accent-subtle/50 border border-border-subtle hover:border-accent-border transition-all text-[11px] font-sans text-ink-primary font-medium flex items-center justify-between gap-2 cursor-pointer group"
+                >
+                  <span className="truncate">"{phrase}"</span>
+                  <span className="font-mono text-[9px] text-accent opacity-0 group-hover:opacity-100 shrink-0 font-bold">
+                    {copiedIndex === idx ? 'COPIED ✓' : 'COPY'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Tab 2: Test Benchmarks */}
+          {demoToolsTab === 'benchmarks' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                <span className="text-[9px] font-mono font-bold text-ink-muted uppercase shrink-0">DOMAINS:</span>
+                {Object.keys(INTENT_CATEGORY_PROMPTS).map((catKey) => {
+                  const cat = INTENT_CATEGORY_PROMPTS[catKey]
+                  const Icon = cat.icon
+                  const isSelected = selectedPromptCategory === catKey
+                  return (
+                    <button
+                      key={catKey}
+                      type="button"
+                      onClick={() => setSelectedPromptCategory(catKey)}
+                      className={"px-2 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 shrink-0 border transition-all cursor-pointer " + (
+                        isSelected
+                          ? 'bg-accent text-white border-accent shadow-xs'
+                          : 'bg-canvas-pure text-ink-secondary hover:text-accent border-border-subtle'
+                      )}
+                    >
+                      <Icon className="w-3 h-3" />
+                      <span>{cat.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                {INTENT_CATEGORY_PROMPTS[selectedPromptCategory]?.phrases.map((phrase, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => processCustomerUtterance(phrase)}
+                    className="px-2.5 py-1 bg-canvas-pure hover:bg-accent-subtle text-ink-primary hover:text-accent border border-border-subtle rounded text-[11px] font-sans truncate shrink-0 transition-colors cursor-pointer"
+                  >
+                    "{phrase}"
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1349,39 +1418,7 @@ export const LiveConversationPane: React.FC<LiveConversationPaneProps> = ({
         </form>
       </div>
 
-      {/* 8. SUGGESTED OPERATOR RESPONSES */}
-      <div className="bg-canvas-pure border-t border-border-subtle p-2.5 px-4 shrink-0 space-y-1.5 select-none shadow-hairline">
-        <div className="flex items-center justify-between font-mono text-[10px]">
-          <span className="font-bold text-ink-muted uppercase tracking-wider flex items-center gap-1.5">
-            <Sparkles className="w-3 h-3 text-accent" />
-            <span>{isHumanTakeover ? 'OPERATOR HANDOFF SCRIPTS' : 'SUGGESTED SCRIPTS'}</span>
-          </span>
-          <button
-            type="button"
-            onClick={handleRefreshSuggestions}
-            className="text-accent font-bold hover:underline flex items-center gap-1 cursor-pointer"
-          >
-            <RefreshCw className="w-2.5 h-2.5" />
-            <span>Refresh</span>
-          </button>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          {SUGGESTION_BANKS[suggestionBankIdx].map((phrase, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => handleUseSuggestion(phrase, idx)}
-              className="text-left p-1.5 rounded bg-canvas-subtle hover:bg-accent-subtle/50 border border-border-subtle hover:border-accent-border transition-all text-[11px] font-sans text-ink-primary font-medium flex items-center justify-between gap-2 cursor-pointer group"
-            >
-              <span className="truncate">"{phrase}"</span>
-              <span className="font-mono text-[9px] text-accent opacity-0 group-hover:opacity-100 shrink-0 font-bold">
-                {copiedIndex === idx ? 'COPIED ✓' : 'COPY'}
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
 
 
 
